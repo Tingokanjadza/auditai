@@ -34,6 +34,26 @@ minutes, run [`QUICKSTART.md`](QUICKSTART.md) — it takes about five.
 3. [`SETUP.md`](SETUP.md) — when you want a different provider, a different database, or the UI
    talking to the API over HTTP.
 
+If you would rather read than run — or you are sending it to someone who will not clone a
+repository — [`IT_Audit_Tool_Overview_and_User_Guide.pdf`](IT_Audit_Tool_Overview_and_User_Guide.pdf)
+is the same ground in 13 illustrated pages, written as a request for a practitioner's review.
+
+### “I want to run it somewhere other than my laptop.”
+
+1. [`SECURITY.md`](SECURITY.md) — **first, not last.** The prototype has no authentication; a
+   deployed instance is open to whoever finds the URL. This document says exactly what is and is
+   not implemented, and lists the known gaps with their fixes.
+2. [`../README.md`](../README.md) §5 *Environment variables*, §6 *Claude API setup*, §7 *GitHub
+   setup*, §8 *Cloud deployment*, §9 *Custom domain* — the front-door summary with the exact
+   commands.
+3. [`DEPLOYMENT.md`](DEPLOYMENT.md) — the long form: the four paths as numbered steps, the
+   pre-deployment checklist, PostgreSQL, TLS, verifying a deployment, and what was and was not
+   proven by execution.
+4. The deployment files themselves, each of which explains **why** rather than only what:
+   [`../Dockerfile`](../Dockerfile), [`../docker-compose.yml`](../docker-compose.yml),
+   [`../render.yaml`](../render.yaml), [`../Procfile`](../Procfile),
+   [`../.streamlit/config.toml`](../.streamlit/config.toml) and [`../.env.example`](../.env.example).
+
 ### “I am going to change the code.”
 
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md) — the layer map and the two data paths first; §7 *Design
@@ -61,10 +81,11 @@ minutes, run [`QUICKSTART.md`](QUICKSTART.md) — it takes about five.
 
 ### “I am an auditor and I want to know whether to trust this.”
 
-1. [`../README.md`](../README.md) §2 and §10 — what it refuses to do, and how each refusal is
+1. [`../README.md`](../README.md) §2 and §15 — what it refuses to do, and how each refusal is
    enforced in code rather than promised.
 2. [`LIMITATIONS_AND_FUTURE_WORK.md`](LIMITATIONS_AND_FUTURE_WORK.md) §3 *Limitations of the
-   system as an audit tool*.
+   system as an audit tool*, and [`SECURITY.md`](SECURITY.md) — *Data handling, and why real
+   evidence must not be uploaded*.
 3. Generate a report ([`QUICKSTART.md`](QUICKSTART.md) step 7) and read Section 10 of it. The
    limitations travel with the document, not with the documentation.
 
@@ -78,7 +99,11 @@ Reading times are approximate; the two marked *reference* are meant to be search
 |---|---|---|
 | [`QUICKSTART.md`](QUICKSTART.md) | ~15 min, or ~5 min to run | The shortest path from a fresh clone to a completed assessment, a recorded human review and a generated report. Numbered steps, exact commands, the exact output to expect at each one. Every command in it was executed against a clean copy of the repository. |
 | [`USER_GUIDE.md`](USER_GUIDE.md) | ~20 min | How to operate the console, page by page, and how to read what it returns: the four-way REQUIRES/PROVES/INFERS/VERIFIES split, the citation verification verdicts, the safety rails, the three assessment modes and which to use, the review actions, and a suggested working order for a real engagement. |
+| [`IT_Audit_Tool_Overview_and_User_Guide.pdf`](IT_Audit_Tool_Overview_and_User_Guide.pdf) | ~20 min | A 13-page illustrated overview and operator guide, written to be sent to a practising auditor as a request for review: what the program does, what it deliberately refuses to do, and how to operate it screen by screen. The one document to hand to someone who will not clone the repository. Generated from the same material as `USER_GUIDE.md`; where the two disagree, the Markdown is current. |
 | [`SETUP.md`](SETUP.md) | ~15 min | Installation and operation in full: prerequisites, install, first run, all six entry points, the complete configuration reference, switching to a real or locally-hosted LLM, embeddings, PostgreSQL, running the UI against the API, troubleshooting, and security notes for handling evidence. |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | ~25 min | Running it somewhere other than the machine it was written on: Streamlit Community Cloud, Render, Procfile platforms and Docker/compose as numbered steps, the pre-deployment checklist, PostgreSQL, custom domains and TLS, the variable reference for a deployed instance, how to verify a deployment afterwards, and an explicit account of what was and was not proven by execution. |
+| [`SECURITY.md`](SECURITY.md) | ~20 min | The security posture stated by mechanism: where secrets come from and what keeps them out of every log, response and screen; what is implemented; what is **not**; the known gaps, each with its exact fix; where a single uploaded file actually ends up; the threat model; and responsible use. The companion to `DEPLOYMENT.md`, to be read before it. |
+| [`CASE_STUDIES.md`](CASE_STUDIES.md) | ~20 min | The historical case-study mechanism: the three evidence provenance classes and their exact disclosure sentences, the non-negotiable rule that reconstructed evidence is never presented as a real organisation's, what `CASE-001` contains and the result the tool actually produces on it, how to add a case, the manifest field reference, and why a case study is **not** an evaluation dataset. |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | ~30 min | The system **as implemented**, not as intended: the layer map and why each boundary exists, the evidence-ingestion path, the control-assessment path step by step, the three experimental conditions, the provider abstraction and how to substitute a local model, seven design decisions with the counter-argument to each, and the known architectural limits. |
 | [`DATABASE_SCHEMA.md`](DATABASE_SCHEMA.md) | reference | All twelve tables, generated from the live SQLAlchemy metadata so the columns are what exists rather than what was intended. ER diagram, the conventions every table follows, **why the AI record and the human record are separate tables**, the JSON columns, the SQLite → PostgreSQL path, and the schema's known limitations. |
 | [`API.md`](API.md) | reference | The HTTP reference for the FastAPI backend: conventions, the error envelope, and every endpoint under `/api/v1` with its request and response shapes — projects, controls, evidence, assessments, reviews, dashboard, reports, evaluation, settings — plus the API's known limitations. (The app also serves live Swagger UI at `/docs`.) |
@@ -87,7 +112,7 @@ Reading times are approximate; the two marked *reference* are meant to be search
 | [`EXAMPLE_RESULTS.md`](EXAMPLE_RESULTS.md) | ~25 min | Every figure the project reports, each with its provenance: the A/B/C comparison, per-dataset predictions, confusion matrices, traceability and hallucination rates, cost, why retrieval recall is a ceiling, **the fault-injection experiment that discriminates B from C**, a full DATASET-005 walkthrough, and a summary of what the results do and do not support. |
 | [`RESEARCH_NOTES.md`](RESEARCH_NOTES.md) | ~15 min | The practical guide to producing dissertation results: what you are allowed to claim, the CLI traps, the core experiment, what to vary in priority order, how to get the data out, how to run a human–AI agreement study, what to report section by section, and a pre-submission checklist. |
 | [`LIMITATIONS_AND_FUTURE_WORK.md`](LIMITATIONS_AND_FUTURE_WORK.md) | ~20 min | Deliberately the least flattering document in the set: everything an examiner would otherwise have to find for themselves, and what would have to be done about each. Read §6 if you read nothing else. |
-| [`TESTING.md`](TESTING.md) | ~15 min | The 713-test suite: how to run it, how it is isolated from your database and the network, what each module covers, which tests are research-critical, the fixtures, how to add a test, and **what is not covered**. |
+| [`TESTING.md`](TESTING.md) | ~15 min | The test suite (761 tests at the time of writing): how to run it, how it is isolated from your database and the network, what each module covers, which tests are research-critical, the fixtures, how to add a test, and **what is not covered**. |
 | [`BUILD_SPEC.md`](BUILD_SPEC.md) | ~10 min | The binding implementation contract the codebase was built against — hard rules (Python 3.9 syntax, no secrets in code, offline-first, synthetic data only), module ownership, and the interface between components. Historical: it specifies the build, and the other documents describe the result. |
 
 ---
@@ -98,11 +123,14 @@ If two documents ever disagree, the one named here is the source of truth and th
 
 | Claim | Owned by |
 |---|---|
-| What the system refuses to do, and how each refusal is enforced | [`../README.md`](../README.md) §2, §10 |
+| What the system refuses to do, and how each refusal is enforced | [`../README.md`](../README.md) §2, §15 |
 | How a request flows through the code | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | What a column means | [`DATABASE_SCHEMA.md`](DATABASE_SCHEMA.md) |
 | What an endpoint returns | [`API.md`](API.md), and the live `/openapi.json` |
-| What a configuration setting does | [`SETUP.md`](SETUP.md) and `.env.example` |
+| What a configuration setting does | [`../README.md`](../README.md) §5 and [`../.env.example`](../.env.example); [`SETUP.md`](SETUP.md) for the narrative |
+| How to deploy it, and which variables a deployment needs | [`DEPLOYMENT.md`](DEPLOYMENT.md), summarised in [`../README.md`](../README.md) §7–§9 |
+| What is and is not protected, and where a secret can appear | [`SECURITY.md`](SECURITY.md) |
+| What a piece of evidence's provenance means, and the rule about reconstructed evidence | [`CASE_STUDIES.md`](CASE_STUDIES.md) |
 | The definition of a metric | [`EVALUATION_METHODOLOGY.md`](EVALUATION_METHODOLOGY.md) |
 | The value of a metric | [`EXAMPLE_RESULTS.md`](EXAMPLE_RESULTS.md) |
 | What a dataset contains and why its answer is correct | [`SYNTHETIC_DATASETS.md`](SYNTHETIC_DATASETS.md) |
