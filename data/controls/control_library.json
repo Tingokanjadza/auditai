@@ -1,0 +1,676 @@
+{
+  "library_id": "SYNTHETIC-ITGC-LIB",
+  "library_name": "Synthetic IT General Controls Library",
+  "library_version": "1.0.0",
+  "disclaimer": "This control library is SYNTHETIC. It was authored by the researcher for the LLM-Assisted IT Audit Risk and Control Assessment System prototype and describes no real organisation, system, policy or audit. It is NOT a substitute for an authoritative control framework and must not be used to plan or perform a real audit. The framework_refs entries are ILLUSTRATIVE ONLY: they indicate the general subject area a control belongs to and have not been reviewed against, endorsed by, or formally mapped to any published framework. Every assessment produced against this library requires review by a qualified human auditor before it means anything.",
+  "usage_note": "assessment_criteria are written as explicitly testable statements with thresholds because they are used verbatim to build retrieval queries and to prompt the model. A criterion that cannot be checked against an artefact will produce a vague assessment.",
+  "controls": [
+    {
+      "control_id": "CONTROL-001",
+      "name": "Multi-Factor Authentication for Privileged Accounts",
+      "objective": "Ensure that every account holding administrative or otherwise privileged access to in-scope systems can only authenticate with a second factor, so that a stolen or guessed password alone cannot grant privileged access.",
+      "description": "All accounts classified as privileged (domain and local administrators, database administrators, security tool administrators, and service accounts permitted interactive logon) must be enrolled in the organisation's multi-factor authentication solution. Enrolment is expected to be enforced centrally by a platform policy applied to the privileged group rather than left to individual account holders to opt into. Any account that cannot be enrolled must be recorded in an exception register with a named approver, a compensating control and an expiry date.",
+      "risk_addressed": "Credential theft through phishing, password re-use or brute force leads to unauthorised privileged access. An attacker holding a privileged session can change security configuration, read or exfiltrate sensitive data at scale, create further accounts, and delete the logs that would evidence the intrusion.",
+      "expected_evidence": [
+        "Privileged account listing exported from the identity provider showing, for each account, the account name, account type and MFA enrolment status (MFA_Status).",
+        "Authentication or MFA policy stating which classes of account are required to use a second factor.",
+        "Configuration export or screenshot narrative of the conditional-access / MFA enforcement rule applied to the privileged account group.",
+        "Exception register listing approved MFA exemptions with the approver, the compensating control and the expiry date.",
+        "Authentication log extract evidencing second-factor challenges for a sample of privileged logons within the audit period."
+      ],
+      "assessment_criteria": [
+        "100% of accounts in the privileged account listing have MFA_Status = Enabled, or appear in the exception register with an approval that has not expired as at the period end.",
+        "The privileged account listing contains an MFA enrolment status column (for example MFA_Status) and an export date inside the audit period; a listing with no enrolment status column cannot evidence this control and the conclusion must be INSUFFICIENT_EVIDENCE rather than EFFECTIVE.",
+        "The authentication policy names privileged or administrative accounts explicitly as in scope; a policy that mandates MFA only for remote access or only for general users does not satisfy this control.",
+        "MFA enforcement is evidenced as a platform-level policy bound to the privileged group, not as per-user self-enrolment.",
+        "Every exception record carries a named approver and an expiry date that has not passed as at the period end."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 5.17 - Authentication information (illustrative)",
+        "NIST SP 800-53 Rev. 5 IA-2 - Identification and authentication, organisational users (illustrative)",
+        "COBIT 2019 DSS05.04 - Manage user identity and logical access (illustrative)",
+        "CIS Critical Security Controls v8 6.5 - Require MFA for administrative access (illustrative)"
+      ],
+      "category": "Logical Access",
+      "control_type": "Preventive",
+      "control_frequency": "Continuous",
+      "inherent_risk": "HIGH",
+      "privilege_level": 5,
+      "data_sensitivity": 4,
+      "retrieval_keywords": [
+        "multi-factor authentication",
+        "MFA",
+        "MFA_Status",
+        "MFA_Method",
+        "Account_Name",
+        "Account_Type",
+        "Privilege_Level",
+        "privileged account",
+        "administrator account",
+        "second factor",
+        "conditional access",
+        "MFA exception",
+        "Enrolled",
+        "two-factor authentication"
+      ]
+    },
+    {
+      "control_id": "CONTROL-002",
+      "name": "Dormant Account Management",
+      "objective": "Ensure that user and service accounts which have not been used within the inactivity threshold defined by the access management standard are identified and disabled, so that unused credentials cannot be exploited unnoticed.",
+      "description": "Account activity is reviewed at least monthly against the identity store. Any enabled account with no successful authentication for more than 90 days, and any account that has never authenticated more than 30 days after creation, must be disabled or formally retained through a documented exception naming the business owner and the reason. Disabling is expected to be evidenced by a status change and a date, not merely by a ticket requesting it.",
+      "risk_addressed": "Dormant accounts retain their entitlements while nobody is watching them. They are attractive to an attacker because their misuse is unlikely to be noticed by the account owner, and they frequently belong to leavers, decommissioned integrations or forgotten test users whose passwords were never rotated.",
+      "expected_evidence": [
+        "Account listing from the identity provider showing account name, account status and last successful logon date (Last_Login).",
+        "Access management standard or account lifecycle procedure stating the inactivity threshold in days.",
+        "Dormant account report produced during the audit period showing the accounts identified.",
+        "Evidence of remediation: a disabled-account export or ticket listing showing the disable date for each identified account.",
+        "Exception register for dormant accounts deliberately retained, with business owner and justification."
+      ],
+      "assessment_criteria": [
+        "No account with Account_Status = Enabled has a Last_Login date more than 90 days before the export date, and no enabled account has a null or 'Never' Last_Login with a creation date more than 30 days before the export date, unless covered by an approved exception.",
+        "The access management standard states an explicit numeric inactivity threshold in days; if no threshold is documented, the population cannot be tested and the conclusion must be INSUFFICIENT_EVIDENCE.",
+        "100% of accounts identified on the dormant account report are evidenced as disabled within 30 days of identification (Disabled_Date minus report date is 30 days or less).",
+        "The account listing includes a last logon column and covers the full in-scope population, reconciling to the identity provider account count within 5%."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 5.18 - Access rights (illustrative)",
+        "NIST SP 800-53 Rev. 5 AC-2(3) - Account management, disable accounts (illustrative)",
+        "COBIT 2019 DSS05.04 - Manage user identity and logical access (illustrative)"
+      ],
+      "category": "Logical Access",
+      "control_type": "Detective",
+      "control_frequency": "Monthly",
+      "inherent_risk": "MEDIUM",
+      "privilege_level": 4,
+      "data_sensitivity": 3,
+      "retrieval_keywords": [
+        "dormant account",
+        "inactive account",
+        "stale account",
+        "Last_Login",
+        "Last_Logon_Date",
+        "Days_Since_Last_Login",
+        "Account_Status",
+        "Disabled_Date",
+        "Account_Name",
+        "Created_Date",
+        "Enabled",
+        "Disabled",
+        "inactivity threshold",
+        "never logged in"
+      ]
+    },
+    {
+      "control_id": "CONTROL-003",
+      "name": "Security Patch Management",
+      "objective": "Ensure that security patches are applied to in-scope servers and endpoints within the remediation window defined by the patch management standard, so that known exploitable vulnerabilities are not left open.",
+      "description": "A patch management process identifies applicable vendor security updates, tests them, and deploys them to the estate on a defined cycle. Critical and high severity patches carry a shorter remediation window than moderate and low ones. Devices that cannot be patched within the window require a documented risk acceptance with an owner and an expiry date. Patch compliance is measured from the patch management platform against the authoritative asset inventory, not from a sample.",
+      "risk_addressed": "Unpatched systems retain publicly documented vulnerabilities for which exploit code is often already circulating. Successful exploitation can give an attacker code execution on the host, a foothold for lateral movement, or a direct route to the data the host processes.",
+      "expected_evidence": [
+        "Patch compliance export from the patch management platform listing each host with its patch status, last patch date and count of missing critical patches.",
+        "Patch management standard stating the remediation window in days for each severity band.",
+        "Asset inventory or CMDB extract for the in-scope population, used to test completeness of the patch export.",
+        "Change or deployment records evidencing the patch cycles executed during the audit period.",
+        "Risk acceptance records for hosts deliberately left unpatched, with owner and expiry date."
+      ],
+      "assessment_criteria": [
+        "100% of hosts in the patch compliance export show Patch_Status = Compliant, or equivalently Critical_Patches_Missing = 0, as at the export date.",
+        "No host has a critical or high severity patch outstanding for longer than the remediation window stated in the patch management standard (30 days for critical unless the standard states otherwise).",
+        "The patch management standard states an explicit numeric remediation window per severity band; without it the exceptions observed cannot be judged late or timely.",
+        "The patch export population reconciles to the asset inventory count for the same date within 5%; a materially smaller population indicates unmanaged hosts rather than compliance.",
+        "Every non-compliant host is either evidenced as remediated within the window or covered by an unexpired risk acceptance naming an owner."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 8.8 - Management of technical vulnerabilities (illustrative)",
+        "NIST SP 800-53 Rev. 5 SI-2 - Flaw remediation (illustrative)",
+        "COBIT 2019 BAI10 / DSS05.07 - Configuration and monitoring (illustrative)",
+        "CIS Critical Security Controls v8 7.3 - Automated operating system patch management (illustrative)"
+      ],
+      "category": "Vulnerability Management",
+      "control_type": "Preventive",
+      "control_frequency": "Monthly",
+      "inherent_risk": "HIGH",
+      "privilege_level": 4,
+      "data_sensitivity": 4,
+      "retrieval_keywords": [
+        "patch management",
+        "security patch",
+        "Patch_Status",
+        "Last_Patch_Date",
+        "Days_Since_Patch",
+        "Critical_Patches_Missing",
+        "Compliance_Status",
+        "Hostname",
+        "OS_Version",
+        "remediation window",
+        "security update",
+        "endpoint",
+        "server patching",
+        "missing patches"
+      ]
+    },
+    {
+      "control_id": "CONTROL-004",
+      "name": "Change Management Approval",
+      "objective": "Ensure that every change to production systems is authorised by an approver independent of the requester before it is implemented, so that unauthorised or untested changes cannot reach production.",
+      "description": "Changes to production applications, infrastructure and configuration are raised as tickets, assessed for risk and impact, and approved before implementation. Standard changes follow a pre-approved template; normal changes require change advisory board or delegated approval; emergency changes may be implemented first but must receive retrospective approval within the window stated in the change management policy. The approver must not be the person who requested or built the change.",
+      "risk_addressed": "Unapproved changes bypass impact assessment, testing and segregation of duties. They can introduce outages, weaken security configuration, or provide a route for a malicious insider to alter a production system without oversight or a reviewable record.",
+      "expected_evidence": [
+        "Change ticket export for the audit period listing change identifier, requester, approver, approval status, change type and implementation date.",
+        "Change management policy stating the approval requirements, the approver independence rule and the emergency change window.",
+        "Change advisory board minutes or approval records for a sample of normal changes.",
+        "Deployment or release log from the production environment, used to test completeness of the change ticket population.",
+        "Retrospective approval records for emergency changes implemented during the period."
+      ],
+      "assessment_criteria": [
+        "100% of production changes in the change ticket export have Approval_Status = Approved with a named Approver recorded on or before the Implementation_Date.",
+        "For 100% of changes the Approver differs from the Requested_By value, evidencing approver independence.",
+        "Every change recorded as an emergency change has a retrospective approval dated within the window stated in the change management policy (5 business days unless the policy states otherwise).",
+        "The change ticket population reconciles to the production deployment log for the same period within 5%; deployments with no corresponding ticket are unapproved changes regardless of the approval rate in the ticket export."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 8.32 - Change management (illustrative)",
+        "NIST SP 800-53 Rev. 5 CM-3 - Configuration change control (illustrative)",
+        "COBIT 2019 BAI06 - Managed IT changes (illustrative)"
+      ],
+      "category": "Change Management",
+      "control_type": "Preventive",
+      "control_frequency": "Per change",
+      "inherent_risk": "HIGH",
+      "privilege_level": 4,
+      "data_sensitivity": 3,
+      "retrieval_keywords": [
+        "change management",
+        "change approval",
+        "Change_ID",
+        "Ticket_ID",
+        "Approval_Status",
+        "Approver",
+        "Requested_By",
+        "Implementation_Date",
+        "Change_Type",
+        "Emergency_Change",
+        "change advisory board",
+        "CAB",
+        "unapproved change",
+        "production change",
+        "release"
+      ]
+    },
+    {
+      "control_id": "CONTROL-005",
+      "name": "Password Policy Enforcement",
+      "objective": "Ensure that the password parameters technically enforced by the in-scope directory and applications are at least as strong as those required by the password policy, so that the documented policy is actually operative.",
+      "description": "The password policy defines minimum length, complexity, history, maximum age and account lockout parameters. This control tests the enforced configuration rather than the written policy: the configuration export from the domain or application is compared parameter by parameter against the policy requirement. A policy that is not technically enforced is a documented intention, not a control.",
+      "risk_addressed": "Weak or unenforced password parameters make password guessing, spraying and offline cracking feasible. Because the written policy and the enforced configuration can drift apart silently, an organisation may believe it is protected while the directory accepts eight-character passwords.",
+      "expected_evidence": [
+        "Password policy or information security standard stating each required parameter and its value.",
+        "Configuration export from the directory or application showing the enforced value of each password parameter (for example Minimum_Password_Length, Password_Complexity, Password_History).",
+        "Screenshot narrative or configuration report identifying the domain, organisational unit or application the settings apply to, and the date of extraction.",
+        "Evidence of the scope of application, for example the list of systems or organisational units the policy object is linked to.",
+        "Exception documentation for any system or account class configured below the policy value."
+      ],
+      "assessment_criteria": [
+        "The configured Minimum_Password_Length is greater than or equal to the minimum length required by the password policy; a configured value below the policy value is a NOT_EFFECTIVE condition, not a partial pass.",
+        "Password_Complexity is Enabled where the policy requires complexity, and Password_History is greater than or equal to the number of remembered passwords required by the policy.",
+        "Account lockout is configured with a threshold no greater than the maximum number of failed attempts stated in the policy, and Maximum_Password_Age is no greater than the policy maximum.",
+        "The configuration export identifies the system or domain it was taken from and is dated within the audit period; an undated or unattributed settings list cannot evidence the enforced configuration.",
+        "The policy object is evidenced as linked to 100% of the in-scope user population, not only to a subset organisational unit."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 5.17 - Authentication information (illustrative)",
+        "NIST SP 800-53 Rev. 5 IA-5 - Authenticator management (illustrative)",
+        "COBIT 2019 DSS05.04 - Manage user identity and logical access (illustrative)"
+      ],
+      "category": "Logical Access",
+      "control_type": "Preventive",
+      "control_frequency": "Continuous",
+      "inherent_risk": "HIGH",
+      "privilege_level": 4,
+      "data_sensitivity": 3,
+      "retrieval_keywords": [
+        "password policy",
+        "Minimum_Password_Length",
+        "Password_Complexity",
+        "Password_History",
+        "Maximum_Password_Age",
+        "Lockout_Threshold",
+        "Setting_Name",
+        "Configured_Value",
+        "Policy_Requirement",
+        "minimum length",
+        "complexity enabled",
+        "group policy",
+        "domain password settings",
+        "account lockout"
+      ]
+    },
+    {
+      "control_id": "CONTROL-006",
+      "name": "Periodic User Access Review",
+      "objective": "Ensure that access rights to in-scope systems are formally reviewed by an accountable owner each quarter and that access identified as no longer required is removed, so that entitlements do not accumulate over time.",
+      "description": "For each in-scope system, the system or business owner is issued the current entitlement listing and records a Retain or Revoke decision for every account and role. Revocations are passed to the access administration team and must be completed within the service level stated in the access management standard. The review is only complete when the removal of revoked access has itself been evidenced.",
+      "risk_addressed": "Entitlement creep: users who change role keep access they no longer need, and access granted for a temporary purpose is never withdrawn. The accumulated rights break segregation of duties, widen the blast radius of any account compromise, and are invisible unless someone reviews them deliberately.",
+      "expected_evidence": [
+        "Completed access review record per in-scope system showing reviewer name, review date, each account listed and the Retain or Revoke decision.",
+        "The entitlement listing that was reviewed, with its extraction date.",
+        "Access management standard stating the review frequency and the removal service level.",
+        "Evidence of removal for accounts marked Revoke, for example a de-provisioning ticket export or a subsequent entitlement listing.",
+        "Sign-off or attestation from the system owner confirming the review is complete."
+      ],
+      "assessment_criteria": [
+        "Each in-scope system has a completed access review record for every quarter of the audit period; a system with no review record for a quarter fails the control for that quarter.",
+        "100% of accounts in the reviewed entitlement listing carry an explicit Review_Decision of Retain or Revoke, together with a Reviewer_Name and Review_Date.",
+        "100% of accounts marked Revoke are evidenced as removed within 30 days of the review date (Revocation_Date minus Review_Date is 30 days or less).",
+        "The reviewed population reconciles to the system entitlement listing extracted on the same date within 2%; a review covering only part of the population does not evidence the control for the remainder."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 5.18 - Access rights (illustrative)",
+        "NIST SP 800-53 Rev. 5 AC-2(j) - Account review (illustrative)",
+        "COBIT 2019 DSS05.04 - Manage user identity and logical access (illustrative)"
+      ],
+      "category": "Logical Access",
+      "control_type": "Detective",
+      "control_frequency": "Quarterly",
+      "inherent_risk": "MEDIUM",
+      "privilege_level": 4,
+      "data_sensitivity": 4,
+      "retrieval_keywords": [
+        "user access review",
+        "access recertification",
+        "entitlement review",
+        "Reviewer_Name",
+        "Review_Date",
+        "Review_Decision",
+        "Retain",
+        "Revoke",
+        "Revocation_Date",
+        "System_Name",
+        "Account_Name",
+        "attestation",
+        "quarterly review",
+        "access certification"
+      ]
+    },
+    {
+      "control_id": "CONTROL-007",
+      "name": "Access Revocation on Termination",
+      "objective": "Ensure that all system access held by a leaver is disabled by the end of the first business day after their termination date, so that departing personnel cannot retain access to organisational systems or data.",
+      "description": "Human resources notifies IT of every termination. On the effective date, the leaver's directory account is disabled, privileged group memberships and remote access entitlements are removed, and any shared or service credentials the leaver knew are rotated. Testing compares the HR termination population to the identity store: the identity store alone cannot show whether an account should have been disabled.",
+      "risk_addressed": "A leaver retaining credentials can access, copy or destroy organisational data after their relationship with the organisation has ended, with no business justification and often no monitoring. The risk is highest for involuntary terminations and for privileged or remote-access holders.",
+      "expected_evidence": [
+        "HR termination listing for the audit period showing employee identifier and termination date.",
+        "Identity store account listing showing account status and the date each account was disabled.",
+        "Joiner-mover-leaver procedure stating the revocation service level in days.",
+        "De-provisioning ticket export evidencing the revocation requests and their completion dates.",
+        "Remote access or VPN entitlement listing used to confirm that leaver entitlements were withdrawn as well as the primary account."
+      ],
+      "assessment_criteria": [
+        "100% of leavers in the HR termination listing are matched to an identity store account with Account_Status = Disabled as at the export date.",
+        "For 100% of matched leavers, Disabled_Date is no later than one business day after Termination_Date.",
+        "No leaver appears in the remote access or privileged group entitlement listing extracted after their termination date.",
+        "The HR termination listing and the identity store export cover the same period and the match rate is 100%; any leaver with no corresponding account record is an unexplained gap that must be reported rather than assumed compliant."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 6.5 - Responsibilities after termination or change of employment (illustrative)",
+        "NIST SP 800-53 Rev. 5 PS-4 - Personnel termination (illustrative)",
+        "COBIT 2019 DSS05.04 - Manage user identity and logical access (illustrative)"
+      ],
+      "category": "Logical Access",
+      "control_type": "Preventive",
+      "control_frequency": "Per event",
+      "inherent_risk": "HIGH",
+      "privilege_level": 5,
+      "data_sensitivity": 4,
+      "retrieval_keywords": [
+        "termination",
+        "leaver",
+        "offboarding",
+        "de-provisioning",
+        "Termination_Date",
+        "Disabled_Date",
+        "Account_Status",
+        "Employee_ID",
+        "Account_Name",
+        "Last_Login",
+        "revocation",
+        "joiner mover leaver",
+        "HR export",
+        "access removal"
+      ]
+    },
+    {
+      "control_id": "CONTROL-008",
+      "name": "Segregation of Duties for Production Deployment",
+      "objective": "Ensure that the person who develops or requests a change is never the person who deploys it to production, and that developers do not hold standing write access to the production environment.",
+      "description": "Deployment to production is performed by a release function or an automated pipeline operating under its own service identity. Developer accounts are granted read-only or no access to production. Where a small team makes full separation impractical, a documented compensating control such as independent post-implementation review of every deployment must operate and be evidenced.",
+      "risk_addressed": "Where one person can both write and release code, unreviewed or malicious changes can reach production without any second pair of eyes. This defeats change approval, makes fraud harder to detect and removes the ability to attribute a production change to an independent authorising act.",
+      "expected_evidence": [
+        "Deployment or release log listing each production release with the developer or requester and the identity that performed the deployment.",
+        "Role assignment export for the production environment showing which users hold deployment or write privileges.",
+        "Segregation of duties matrix or standard defining the conflicting role pairs.",
+        "Evidence of the compensating control where separation is not achieved, for example post-implementation review records.",
+        "Pipeline configuration showing that deployments execute under a service identity rather than a named developer account."
+      ],
+      "assessment_criteria": [
+        "For 100% of production deployments in the release log, Deployed_By differs from the developer or Requested_By value for the same release.",
+        "No individual user appears in the production role assignment export holding both a development role and a production deployment or write role, as defined by the segregation of duties matrix.",
+        "Every deployment performed by a named developer account is covered by a documented and evidenced compensating control such as an independent post-implementation review completed within 5 business days.",
+        "The segregation of duties matrix explicitly names the conflicting role pairs; without it the role assignment export cannot be judged and the conclusion must be INSUFFICIENT_EVIDENCE."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 5.3 - Segregation of duties (illustrative)",
+        "NIST SP 800-53 Rev. 5 AC-5 - Separation of duties (illustrative)",
+        "COBIT 2019 BAI06 / BAI07 - Managed IT changes and change acceptance (illustrative)"
+      ],
+      "category": "Change Management",
+      "control_type": "Preventive",
+      "control_frequency": "Per change",
+      "inherent_risk": "HIGH",
+      "privilege_level": 5,
+      "data_sensitivity": 3,
+      "retrieval_keywords": [
+        "segregation of duties",
+        "separation of duties",
+        "SoD",
+        "Deployed_By",
+        "Developer",
+        "Requested_By",
+        "Release_ID",
+        "Role_Name",
+        "User_ID",
+        "production access",
+        "deployment pipeline",
+        "conflicting roles",
+        "post-implementation review"
+      ]
+    },
+    {
+      "control_id": "CONTROL-009",
+      "name": "Backup Execution and Failure Remediation",
+      "objective": "Ensure that backups of in-scope systems run on their defined schedule, that failures are detected and re-run, and that backup copies are retained for the period required by the backup standard.",
+      "description": "Backup jobs are scheduled per system according to its recovery requirements. Job outcomes are monitored daily; a failed job must be re-run or raised as an incident within one business day. Retention is configured to at least the period stated in the backup standard, and at least one copy is held on media or in a location that a compromise of the source system cannot reach.",
+      "risk_addressed": "Without complete, current and recoverable backups the organisation cannot restore after ransomware, storage failure, corruption or accidental deletion. Backup failures are frequently silent: the job is scheduled, the report is not read, and the gap is only discovered at the moment of need.",
+      "expected_evidence": [
+        "Backup job log for the audit period listing each job with its system, date and outcome (Job_Status).",
+        "Backup standard or schedule stating the required backup frequency and retention period per system class.",
+        "Incident or re-run records for failed jobs, with resolution dates.",
+        "Retention configuration export from the backup platform showing the configured retention in days per policy.",
+        "System inventory of backup-in-scope systems, used to test that no in-scope system is missing from the job log."
+      ],
+      "assessment_criteria": [
+        "At least 99% of scheduled backup jobs in the audit period have Job_Status = Success, measured over the full job log rather than a sample.",
+        "100% of jobs with Job_Status = Failed have an evidenced re-run or incident ticket with a resolution date no more than one business day after the failure date.",
+        "Every system in the backup-in-scope inventory appears in the job log at the frequency required by the backup standard, with no gap longer than the required interval.",
+        "The configured Retention_Days for each policy is greater than or equal to the retention period stated in the backup standard."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 8.13 - Information backup (illustrative)",
+        "NIST SP 800-53 Rev. 5 CP-9 - System backup (illustrative)",
+        "COBIT 2019 DSS04 - Managed continuity (illustrative)"
+      ],
+      "category": "Backup and Recovery",
+      "control_type": "Detective",
+      "control_frequency": "Daily",
+      "inherent_risk": "HIGH",
+      "privilege_level": 3,
+      "data_sensitivity": 5,
+      "retrieval_keywords": [
+        "backup",
+        "backup job",
+        "Job_Status",
+        "Job_Date",
+        "Backup_Job_ID",
+        "System_Name",
+        "Retention_Days",
+        "Success",
+        "Failed",
+        "Resolution_Date",
+        "backup schedule",
+        "backup failure",
+        "incident ticket",
+        "restore point"
+      ]
+    },
+    {
+      "control_id": "CONTROL-010",
+      "name": "Backup Restoration Testing",
+      "objective": "Ensure that backups of critical systems are periodically restored under test conditions so that recoverability, and not merely job success, is demonstrated.",
+      "description": "At least once per year, and more often for the most critical systems, a restoration is performed from backup media into an isolated environment. The test records what was restored, whether the restored data was verified as complete and usable, the elapsed recovery time against the documented recovery time objective, and any failure with its remediation owner and due date.",
+      "risk_addressed": "A backup that cannot be restored provides no recovery capability at all. Media corruption, missing encryption keys, incomplete job scope and undocumented restore procedures are only discovered by attempting a restore, and discovering them during a real incident converts an outage into a data loss event.",
+      "expected_evidence": [
+        "Restoration test records for the audit period showing the system, test date, tester, and the restore result.",
+        "Business continuity or backup standard stating the required test frequency and the recovery time and point objectives.",
+        "Evidence of data verification after restore, for example a record count or integrity check comparison.",
+        "Remediation records for any failed restoration test, with owner and completion date.",
+        "List of critical systems in scope for restoration testing, used to test coverage."
+      ],
+      "assessment_criteria": [
+        "Each system on the critical system list has at least one documented restoration test with a Test_Date inside the audit period.",
+        "100% of restoration test records state the tester, the Restore_Result, and a verification step evidencing that the restored data was complete and usable.",
+        "The recovery time achieved in each successful test is within the recovery time objective documented in the continuity standard.",
+        "100% of tests with Restore_Result = Failed have a remediation action with a named owner and a completion or due date, and a subsequent successful re-test where the due date has passed."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 8.13 - Information backup (illustrative)",
+        "NIST SP 800-53 Rev. 5 CP-4 - Contingency plan testing (illustrative)",
+        "COBIT 2019 DSS04.04 - Exercise, test and review the continuity plan (illustrative)"
+      ],
+      "category": "Backup and Recovery",
+      "control_type": "Detective",
+      "control_frequency": "Annual",
+      "inherent_risk": "MEDIUM",
+      "privilege_level": 3,
+      "data_sensitivity": 5,
+      "retrieval_keywords": [
+        "restoration test",
+        "restore test",
+        "recovery test",
+        "Test_Date",
+        "Restore_Result",
+        "Tester",
+        "System_Name",
+        "RTO",
+        "RPO",
+        "recovery time objective",
+        "disaster recovery",
+        "Backup_Set",
+        "data verification",
+        "remediation owner"
+      ]
+    },
+    {
+      "control_id": "CONTROL-011",
+      "name": "Security Event Logging and Log Retention",
+      "objective": "Ensure that in-scope systems generate security-relevant audit logs, forward them to the central log platform, and retain them for the period required by the logging standard.",
+      "description": "Each in-scope system is configured to log authentication successes and failures, privileged actions, and configuration or policy changes. Logs are forwarded to the central platform where they are retained for the standard's retention period and protected from modification by the administrators of the source system. Coverage is tested against the asset inventory, and continuity is tested by looking for gaps in event receipt.",
+      "risk_addressed": "Without complete and retained logs, security incidents cannot be detected, investigated or attributed, and an attacker with administrative access on the source system can erase the only record of what they did. Gaps also undermine the evidence base for every other detective control.",
+      "expected_evidence": [
+        "Log source listing from the central log platform showing each source, its status and the date of the last event received.",
+        "Logging standard stating the event categories that must be captured and the retention period.",
+        "Logging configuration export from a sample of in-scope systems showing the enabled audit categories.",
+        "Retention configuration from the log platform showing the configured retention period.",
+        "Asset inventory of in-scope systems, used to test log source coverage."
+      ],
+      "assessment_criteria": [
+        "100% of systems in the in-scope asset inventory appear as active log sources in the log platform source listing.",
+        "The logging configuration for each sampled system enables, at minimum, authentication success and failure, privileged action and configuration change events, as required by the logging standard.",
+        "The configured Retention_Days is greater than or equal to the retention period stated in the logging standard (12 months unless the standard states otherwise).",
+        "No active log source shows a gap greater than 24 hours between Last_Event_Received and the export date, and no unexplained gap during the audit period.",
+        "Log data is evidenced as protected from alteration by source-system administrators, for example by forwarding to a platform they do not administer."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 8.15 - Logging (illustrative)",
+        "NIST SP 800-53 Rev. 5 AU-2 / AU-11 - Event logging and audit record retention (illustrative)",
+        "COBIT 2019 DSS05.07 - Manage vulnerabilities and monitor the infrastructure (illustrative)"
+      ],
+      "category": "Logging and Monitoring",
+      "control_type": "Detective",
+      "control_frequency": "Continuous",
+      "inherent_risk": "MEDIUM",
+      "privilege_level": 4,
+      "data_sensitivity": 4,
+      "retrieval_keywords": [
+        "audit logging",
+        "security event log",
+        "Log_Source",
+        "Last_Event_Received",
+        "Retention_Days",
+        "Event_Type",
+        "System_Name",
+        "SIEM",
+        "log forwarding",
+        "logging enabled",
+        "log retention",
+        "authentication failure",
+        "log gap",
+        "audit trail"
+      ]
+    },
+    {
+      "control_id": "CONTROL-012",
+      "name": "Privileged Activity Monitoring and Alert Review",
+      "objective": "Ensure that alerts raised on privileged and anomalous administrative activity are reviewed and dispositioned by the security team within the timescale defined by the monitoring procedure.",
+      "description": "Detection rules raise alerts on privileged group membership changes, administrative logons outside working hours, repeated failed privileged authentication and use of break-glass accounts. Each alert is triaged, assigned a disposition and, where relevant, escalated as an incident. This control tests review discipline: an alert that fires but is never read provides no detection at all.",
+      "risk_addressed": "Detection without disposition is theatre. If alerts accumulate unreviewed, privileged misuse and early-stage intrusions pass unnoticed, and the organisation retains the cost of monitoring without the benefit.",
+      "expected_evidence": [
+        "Alert export for the audit period listing alert identifier, date raised, severity, status, reviewer and review date.",
+        "Monitoring procedure stating the review timescale per severity and the escalation path.",
+        "Detection rule listing or configuration export showing the rules that cover privileged activity.",
+        "Incident records for alerts escalated during the period.",
+        "Break-glass or emergency-access usage records reconciled to the alerts raised."
+      ],
+      "assessment_criteria": [
+        "100% of alerts in the alert export have a terminal Alert_Status (for example Closed or Escalated) together with a named Reviewer and a Review_Date, or are within the review window as at the export date.",
+        "For high severity alerts, the interval between Alert_Date and Review_Date is within the timescale stated in the monitoring procedure (one business day unless stated otherwise) for at least 95% of alerts.",
+        "The detection rule listing includes rules covering privileged group membership change, out-of-hours administrative logon and repeated failed privileged authentication.",
+        "No alert raised more than 30 days before the export date remains in an open or unreviewed state.",
+        "100% of break-glass account usages in the emergency-access records have a corresponding alert and a documented business justification."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 8.16 - Monitoring activities (illustrative)",
+        "NIST SP 800-53 Rev. 5 AU-6 - Audit record review, analysis and reporting (illustrative)",
+        "COBIT 2019 DSS05.07 - Monitor the infrastructure for security-related events (illustrative)"
+      ],
+      "category": "Logging and Monitoring",
+      "control_type": "Detective",
+      "control_frequency": "Daily",
+      "inherent_risk": "HIGH",
+      "privilege_level": 5,
+      "data_sensitivity": 4,
+      "retrieval_keywords": [
+        "privileged activity monitoring",
+        "alert review",
+        "Alert_ID",
+        "Alert_Status",
+        "Alert_Date",
+        "Review_Date",
+        "Reviewer",
+        "Severity",
+        "escalation",
+        "break-glass",
+        "out of hours logon",
+        "failed logon",
+        "SIEM alert",
+        "unreviewed alert"
+      ]
+    },
+    {
+      "control_id": "CONTROL-013",
+      "name": "Third-Party Remote Access Authorisation",
+      "objective": "Ensure that third-party and vendor access to internal systems is individually attributable, time-bound, authorised by a named internal sponsor, and monitored while it is in use.",
+      "description": "Vendor personnel are issued individually named accounts with an expiry date rather than shared credentials. Access is granted for a specific engagement referenced to a contract, is approved by an internal sponsor, and is enabled only for the period of the approved request. Remote sessions are logged, and standing privileged access outside an approved maintenance window is not permitted.",
+      "risk_addressed": "Third-party access extends the organisation's trust boundary to an environment it does not control. Shared, non-expiring or unmonitored vendor credentials have repeatedly been the initial access vector for major intrusions, and without attribution the organisation cannot determine who acted during an incident.",
+      "expected_evidence": [
+        "Third-party account listing showing vendor name, account name, sponsor, account status and expiry date.",
+        "Third-party access standard or vendor management policy stating the authorisation, expiry and monitoring requirements.",
+        "Access request records or tickets approving each vendor account or session, referencing the contract or engagement.",
+        "Remote session log for the audit period showing session start and end times per vendor account.",
+        "Contract, NDA or security schedule references for each vendor with active access."
+      ],
+      "assessment_criteria": [
+        "100% of accounts in the third-party account listing are individually named (no shared or generic vendor credentials) and map to a named Vendor_Name and an internal sponsor.",
+        "100% of active third-party accounts have an Account_Expiry_Date that is set and no more than 90 days beyond the export date.",
+        "100% of vendor remote sessions in the session log fall inside an approved access request window; sessions with no corresponding approved request are unauthorised access.",
+        "No third-party account holds standing privileged group membership outside an approved maintenance window, evidenced by the privileged group membership export.",
+        "Every vendor with an active account has a current contract or security schedule reference recorded as at the period end."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 5.19 / 5.22 - Supplier relationships and monitoring (illustrative)",
+        "NIST SP 800-53 Rev. 5 AC-17 / SA-9 - Remote access and external system services (illustrative)",
+        "COBIT 2019 APO10 - Managed vendors (illustrative)"
+      ],
+      "category": "Third-Party Access",
+      "control_type": "Preventive",
+      "control_frequency": "Continuous",
+      "inherent_risk": "HIGH",
+      "privilege_level": 5,
+      "data_sensitivity": 4,
+      "retrieval_keywords": [
+        "third party access",
+        "vendor access",
+        "Vendor_Name",
+        "Account_Expiry_Date",
+        "Sponsor",
+        "Access_Request_ID",
+        "Session_Start",
+        "Session_End",
+        "Account_Name",
+        "remote access",
+        "VPN",
+        "supplier",
+        "shared account",
+        "maintenance window"
+      ]
+    },
+    {
+      "control_id": "CONTROL-014",
+      "name": "Encryption of Sensitive Data at Rest and in Transit",
+      "objective": "Ensure that data classified as Confidential or above is encrypted at rest and that all transmission of such data uses a current, approved transport protocol and cipher suite.",
+      "description": "Systems holding classified data enable storage or database encryption using an algorithm named in the cryptography standard. External-facing services are configured to negotiate only current TLS versions and approved cipher suites, with legacy protocols disabled. Key management, including custodianship and the rotation interval, is documented and evidenced.",
+      "risk_addressed": "Unencrypted sensitive data can be read directly from storage media, backups, snapshots or intercepted network traffic without needing to defeat application access controls, converting a limited technical compromise into a full confidentiality breach.",
+      "expected_evidence": [
+        "Asset or data inventory showing each system with its data classification and encryption-at-rest status.",
+        "Cryptography standard naming the approved algorithms, minimum TLS version and key rotation interval.",
+        "TLS or protocol scan export for external-facing endpoints showing the negotiated protocol versions and cipher suites.",
+        "Encryption configuration export from a sample of systems showing the algorithm in use.",
+        "Key management records evidencing custodianship and the date of the most recent key rotation."
+      ],
+      "assessment_criteria": [
+        "100% of systems classified Confidential or above in the asset inventory show Encryption_Status = Enabled for data at rest.",
+        "The Encryption_Algorithm recorded for each such system is named as approved in the cryptography standard (for example AES-256); an unnamed or legacy algorithm fails the criterion.",
+        "100% of external-facing endpoints in the scan export negotiate TLS 1.2 or higher, with TLS 1.0, TLS 1.1 and plaintext protocols disabled.",
+        "Key rotation records show the most recent rotation within the interval stated in the cryptography standard as at the period end.",
+        "The asset inventory carries a data classification column and covers the full in-scope population; without classification the encryption requirement cannot be scoped and the conclusion must be INSUFFICIENT_EVIDENCE."
+      ],
+      "framework_refs": [
+        "ISO/IEC 27001:2022 Annex A 8.24 - Use of cryptography (illustrative)",
+        "NIST SP 800-53 Rev. 5 SC-13 / SC-28 - Cryptographic protection and protection of information at rest (illustrative)",
+        "COBIT 2019 DSS05.03 - Manage endpoint security (illustrative)"
+      ],
+      "category": "Data Protection",
+      "control_type": "Preventive",
+      "control_frequency": "Continuous",
+      "inherent_risk": "HIGH",
+      "privilege_level": 3,
+      "data_sensitivity": 5,
+      "retrieval_keywords": [
+        "encryption",
+        "Encryption_Status",
+        "Encryption_Algorithm",
+        "TLS_Version",
+        "Data_Classification",
+        "AES-256",
+        "at rest",
+        "in transit",
+        "cipher suite",
+        "Key_Rotation_Date",
+        "System_Name",
+        "plaintext",
+        "certificate",
+        "cryptography standard"
+      ]
+    }
+  ]
+}

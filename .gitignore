@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# Secrets - never commit a real environment file
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ---------------------------------------------------------------------------
+# Virtual environments
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# ---------------------------------------------------------------------------
+# Runtime data. The directory structure is kept via .gitkeep; the contents are
+# generated (uploaded evidence, reports, the database) and must never be
+# committed - some of it could be real audit evidence in a deployed instance.
+# ---------------------------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/uploads/*
+data/reports/*
+data/evaluation/*
+data/synthetic/*
+!data/**/.gitkeep
+logs/
+*.log
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ---------------------------------------------------------------------------
+# Streamlit local secrets (the deployed equivalent of .env)
+# ---------------------------------------------------------------------------
+.streamlit/secrets.toml
