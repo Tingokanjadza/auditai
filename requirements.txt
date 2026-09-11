@@ -36,6 +36,14 @@ scikit-learn==1.6.1               # HashingVectorizer for the local embedding pr
 
 # ---- LLM providers -------------------------------------------------------
 openai==2.48.0                    # any OpenAI-compatible endpoint via base_url
+# Claude, via app/llm/anthropic_provider.py. Deliberately a floor, not a pin: the SDK
+# dropped Python 3.9 at its 1.0 release, so the resolver picks the newest 0.x here
+# (3.9.6 locally) and a 1.x on a 3.12 deployment. Both satisfy the small surface this
+# project uses - messages.create, output_config, adaptive thinking and the typed
+# exception classes - which is why one requirements file can serve both. Pinning an
+# exact version would make the file installable on exactly one of the two interpreters,
+# so please do not "tidy" this into `anthropic==…`.
+anthropic>=0.125
 httpx==0.28.1
 requests==2.32.5
 

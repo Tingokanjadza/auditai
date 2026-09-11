@@ -56,6 +56,27 @@ MOCK_PROVIDER_NOTE = (
     "Results obtained with it measure this pipeline, not model quality."
 )
 
+#: Shown whenever the provider that answered is not the provider that was selected -
+#: which in practice means "LLM_PROVIDER=claude, but ANTHROPIC_API_KEY is missing, so the
+#: offline stand-in answered". A researcher who believes a run used Claude when it did
+#: not would draw a conclusion about a language model from a rule engine, so this is the
+#: one message on the screen that is allowed to shout.
+PROVIDER_MISMATCH_NOTE = (
+    "The provider that answered is NOT the provider that was configured. Nothing produced "
+    "in this state may be reported as a result from the configured model."
+)
+
+#: Display names for the canonical provider ids in :mod:`app.llm.factory`. The console
+#: says "Claude", not "claude"; an id that is not in here is shown verbatim rather than
+#: guessed at, because inventing a friendly name for an unknown provider is exactly the
+#: kind of helpfulness that would let a wrong provider look right.
+PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
+    "mock": "Mock",
+    "claude": "Claude",
+    "anthropic": "Claude",
+    "openai": "OpenAI",
+}
+
 
 # ---- text helpers
 def escape(value: Any, default: str = "") -> str:
@@ -319,23 +340,102 @@ def ai_disclaimer_banner(
     )
 
 
-def provider_banner(info: Mapping[str, Any], compact: bool = False) -> None:
-    """Say which model answered - loudly when the answer is "none".
+def provider_display_name(provider: Any) -> str:
+    """``"claude"`` -> ``"Claude"``. An unrecognised id is returned as it was given."""
+    key = _label_of(provider).lower()
+    if not key:
+        return "unknown"
+    return PROVIDER_DISPLAY_NAMES.get(key, key)
 
-    A research demonstration run against the offline stand-in must never be mistaken for
-    a language-model result, so the mock case gets the warning treatment rather than a
-    neutral caption.
+
+def provider_label(info: Mapping[str, Any]) -> str:
+    """The one line a screenshot of this console has to get right.
+
+    It names ``active_provider`` - the provider that actually answered - and never
+    ``configured_provider``. The distinction is the whole point: a ``.env`` selecting
+    Claude with no key in it produces a mapping whose configured provider is Claude and
+    whose active provider is the mock, and the badge must read *Mock*.
+
+    Falls back to the pre-rendered ``label`` only when no active provider is present,
+    which happens when a caller passes a mapping this component did not shape.
     """
-    is_mock = bool(info.get("is_mock"))
-    label = str(info.get("label", "") or "unknown provider")
+    active = _label_of(info.get("active_provider"))
+    if not active:
+        return str(info.get("label") or "AI Provider: unknown")
+    return "AI Provider: {0}".format(provider_display_name(active))
+
+
+def provider_banner(info: Mapping[str, Any], compact: bool = False) -> None:
+    """Say which model answered - loudly when the answer is "none", louder when it lies.
+
+    Takes the mapping from ``app.frontend.data_access.provider_badge``:
+    ``active_provider``, ``configured_provider``, ``active_model``, ``is_mock``,
+    ``fell_back_to_mock`` and a human ``detail``.
+
+    Three states, deliberately not three shades of the same colour:
+
+    * a real provider answered - accent, neutral;
+    * the mock answered because the mock was asked for - the AI colour and the
+      rule-engine caveat, because a demonstration run must not read as a model run;
+    * the mock answered because a *real provider was asked for and was unusable* - red,
+      both provider names spelled out, and :data:`PROVIDER_MISMATCH_NOTE`. This is the
+      case that silently invalidates an experiment, so it is the case that gets the loud
+      treatment rather than a caption someone can miss.
+    """
+    active = _label_of(info.get("active_provider"))
+    configured = _label_of(info.get("configured_provider"))
+    is_mock = bool(info.get("is_mock", active.lower() == "mock"))
+    # A mismatch is worth shouting about even if the fallback flag is missing, so the
+    # provider names are compared directly as well.
+    mismatched = bool(info.get("fell_back_to_mock")) or bool(
+        configured and active and configured.lower() != active.lower()
+    )
+    model = _label_of(info.get("active_model"))
     detail = str(info.get("detail", "") or "")
-    color = theme.AI_COLOR if is_mock else theme.ACCENT
+
+    if mismatched:
+        color = theme.RED
+    elif is_mock:
+        color = theme.AI_COLOR
+    else:
+        color = theme.ACCENT
+
+    line = [plain_badge(provider_label(info), color)]
+    if model and not is_mock:
+        line.append(plain_badge(model))
+
+    mismatch_html = ""
+    if mismatched:
+        mismatch_html = (
+            '<div class="ia-provider-detail" style="color:{red};font-weight:700;">{headline}</div>'
+            '<div class="ia-provider-detail" style="color:{red};">{note}</div>'
+        ).format(
+            red=theme.RED,
+            headline=_esc(
+                "Configured: {0} · Actually answering: {1}".format(
+                    provider_display_name(configured) if configured else "unknown",
+                    provider_display_name(active) if active else "unknown",
+                )
+            ),
+            note=_esc(PROVIDER_MISMATCH_NOTE),
+        )
+
+    style = (
+        ' style="border-color:{0};background:{1};"'.format(
+            theme.RED, theme.hex_to_rgba(theme.RED, 0.12)
+        )
+        if mismatched
+        else ""
+    )
     _write(
-        '<div class="ia-provider{mock}">'
-        '<div class="ia-provider-line">{badge}</div>'
+        '<div class="ia-provider{mock}"{style}>'
+        '<div class="ia-provider-line">{badges}</div>'
+        "{mismatch}"
         '<div class="ia-provider-detail">{detail}</div></div>'.format(
             mock=" ia-mock" if is_mock else "",
-            badge=plain_badge(label, color),
+            style=style,
+            badges="".join(line),
+            mismatch=mismatch_html,
             detail=_esc(detail if not compact else _clip(detail, 90)),
         )
     )
@@ -924,6 +1024,8 @@ __all__ = [
     "AI_DISCLAIMER",
     "AI_DISCLAIMER_BODY",
     "MOCK_PROVIDER_NOTE",
+    "PROVIDER_DISPLAY_NAMES",
+    "PROVIDER_MISMATCH_NOTE",
     "RISK_MODEL_NOTE",
     "ai_disclaimer_banner",
     "ai_vs_human_panel",
@@ -945,6 +1047,8 @@ __all__ = [
     "parse_badge",
     "plain_badge",
     "provider_banner",
+    "provider_display_name",
+    "provider_label",
     "risk_badge",
     "section_header",
     "status_badge",

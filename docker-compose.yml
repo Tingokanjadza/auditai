@@ -1,0 +1,120 @@
+# Two services from one image: the FastAPI backend and the Streamlit audit console.
+#
+#   docker compose up --build          # console on :8501, API docs on :8000/docs
+#   docker compose down                # stop; the named volume keeps the data
+#   docker compose down -v             # stop and delete the evidence, database and reports
+#
+# It works on a fresh clone with no configuration at all: .env is optional, and the
+# default provider is the offline deterministic mock, so nothing here needs a key or a
+# network. Copy .env.example to .env to change that.
+#
+# Requires Compose v2.24 or newer for the `env_file: required: false` form.
+
+services:
+  api:
+    build: .
+    image: llm-it-auditor:local
+    command: ["api"]
+    env_file:
+      # Optional: a fresh clone has no .env (it is gitignored), and a missing file must
+      # not stop the demo from starting.
+      - path: .env
+        required: false
+    environment:
+      # APP_ROLE is what the image health check reads; it has to agree with `command`.
+      APP_ROLE: api
+      API_PORT: "8000"
+      # The URLs a person types into a browser. They are published in the OpenAPI
+      # `servers` block and in the API description, and PUBLIC_APP_URL is also trusted
+      # by CORS - which is why the console can call this API from the browser.
+      PUBLIC_API_URL: http://localhost:8000
+      PUBLIC_APP_URL: http://localhost:8501
+      CORS_ALLOW_ORIGINS: http://localhost:8501,http://127.0.0.1:8501
+      # False here because this stack is a local demo, where loopback on any port is the
+      # developer's own browser. Set it to true for anything the internet can reach, and
+      # list the real origin in CORS_ALLOW_ORIGINS above.
+      CORS_RESTRICT_TO_CONFIGURED: "false"
+      # Passed through from your shell if it is set, and absent otherwise. No key is
+      # ever written in this file: `export ANTHROPIC_API_KEY=...` before `docker compose
+      # up`, or put it in .env, which is gitignored.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - audit-data:/app/data
+    restart: unless-stopped
+
+  ui:
+    build: .
+    image: llm-it-auditor:local
+    command: ["ui"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_ROLE: ui
+      STREAMLIT_PORT: "8501"
+      # Route the console through the HTTP API rather than the in-process service layer.
+      # This is the deployed shape the research design describes; the console still works
+      # standalone if you set USE_API=false and drop the api service.
+      USE_API: "true"
+      # Two different addresses on purpose, and both are needed:
+      #   API_BASE_URL  - where this container reaches the API. Compose resolves `api` on
+      #                   the internal network; it means nothing in a browser. This is the
+      #                   value app/frontend/api_client.py actually calls.
+      #   PUBLIC_API_URL - where a human reaches the API, for links and documentation.
+      API_BASE_URL: http://api:8000
+      PUBLIC_API_URL: http://localhost:8000
+      PUBLIC_APP_URL: http://localhost:8501
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8501:8501"
+    volumes:
+      # The same volume as the API: uploaded evidence and generated reports are files on
+      # disk, and both services must see the same ones. With USE_API=true the console
+      # reads and writes them through the API rather than touching the database itself,
+      # which is what keeps two processes off one SQLite file.
+      - audit-data:/app/data
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Optional PostgreSQL. The schema is already portable - app/database/models.py uses no
+  # SQLite-specific types - so moving is a configuration change, not a migration.
+  #
+  # To use it:
+  #   1. uncomment this service and the `audit-db` volume at the bottom;
+  #   2. uncomment `psycopg[binary]>=3.1` in requirements.txt and rebuild the image
+  #      (`docker compose build`), because the driver is not installed by default;
+  #   3. add this line to the environment of BOTH the api and ui services - exactly as
+  #      written, with a password you have changed:
+  #
+  #        DATABASE_URL: postgresql+psycopg://audit:change-me@db:5432/itaudit
+  #
+  #   4. add `db: {condition: service_healthy}` to the api service's depends_on.
+  #
+  # With PostgreSQL the API may also run more than one worker (WEB_CONCURRENCY), which
+  # SQLite cannot support.
+  # ---------------------------------------------------------------------------
+  # db:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: audit
+  #     POSTGRES_PASSWORD: change-me
+  #     POSTGRES_DB: itaudit
+  #   volumes:
+  #     - audit-db:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U audit -d itaudit"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   restart: unless-stopped
+
+volumes:
+  # Named rather than a bind mount so the container's own user owns it: the image
+  # creates /app/data as uid 10001, and a fresh named volume inherits that ownership.
+  audit-data:
+  # audit-db:

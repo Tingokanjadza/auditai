@@ -117,7 +117,42 @@ def test_provider_name_normalisation_never_raises(given, expected):
 
 
 def test_available_providers():
-    assert available_providers() == [MOCK, OPENAI]
+    """Every provider the build can construct, with the mock first.
+
+    The mock leads the list because it is the only one that always works: it is what a
+    fresh clone runs on, and what every other provider falls back to.
+    """
+    from app.llm.factory import CLAUDE
+
+    assert available_providers() == [MOCK, CLAUDE, OPENAI]
+    assert available_providers()[0] == MOCK
+
+
+def test_claude_and_anthropic_both_resolve_to_the_claude_provider():
+    """Users type either name; neither may silently land on an OpenAI-protocol client."""
+    from app.llm.factory import CLAUDE
+
+    for spelling in ("claude", "anthropic", "Claude", "  ANTHROPIC  "):
+        assert normalise_provider_name(spelling) == CLAUDE
+
+
+def test_selecting_claude_without_a_key_falls_back_to_the_mock_and_says_so(monkeypatch):
+    """A run that silently used the mock while its author believed it used Claude would
+    invalidate any result drawn from it, so the fallback must be reported, not hidden."""
+    from app.config import reload_settings
+    from app.llm.factory import provider_health
+
+    monkeypatch.setenv("LLM_PROVIDER", "claude")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    reload_settings()
+    try:
+        health = provider_health()
+        assert health["configured_provider"] == "claude"
+        assert health["active_provider"] == MOCK
+        assert health["fell_back_to_mock"] is True
+        assert "ANTHROPIC_API_KEY" in health["fallback_reason"]
+    finally:
+        reload_settings()
 
 
 # ------------------------------------------------------------------ the mock itself

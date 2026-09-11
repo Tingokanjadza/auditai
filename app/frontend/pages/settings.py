@@ -9,10 +9,13 @@ with which chunk size, against which prompt version, and at what citation-match
 threshold: those are the parameters of the experiment, not preferences. They are shown
 here together so a screenshot of this page is a complete statement of the conditions.
 
-**Secrets are shown as fingerprints, never as values.** ``app.config.Settings`` masks the
-API keys before they reach any display path, and the database connection string is masked
-again here in case it carries a password. Nothing on this page can be copied and used to
-authenticate as anybody.
+**Secrets are shown as fingerprints or as nothing at all, never as values.**
+``app.config.Settings`` masks the OpenAI-side keys before they reach any display path;
+``ANTHROPIC_API_KEY`` is reported as present or absent only, because "yes, a key is set"
+is the entire question this page exists to answer about it; the database connection
+string is masked again here in case it carries a password; and every remaining field
+whose name looks like a credential is reduced to presence before the raw dump renders it.
+Nothing on this page can be copied and used to authenticate as anybody.
 
 The page is deliberately read-only. Configuration comes from the environment and the
 ``.env`` file, and a settings screen that wrote to them would let a browser session
@@ -38,6 +41,10 @@ _ENV_EXAMPLE = """# .env - copy from .env.example, then restart the application.
 # Offline default: a deterministic rule-based stand-in, not a language model.
 LLM_PROVIDER=mock
 
+# To use Claude instead - see the Claude block below for the optional settings.
+# LLM_PROVIDER=claude
+# ANTHROPIC_API_KEY=sk-ant-your-key-here
+
 # To use a hosted OpenAI-compatible model instead:
 # LLM_PROVIDER=openai
 # LLM_MODEL=gpt-4o-mini
@@ -54,6 +61,37 @@ CHUNK_OVERLAP=180
 CITATION_MATCH_THRESHOLD=0.6
 """
 
+#: The exact lines to paste to turn Claude on. Kept separate from the full example so
+#: that the instruction on the page is "paste this", not "find the right two lines in
+#: that block and uncomment them".
+_ENV_CLAUDE = """# --- Enable Claude -------------------------------------------------------
+# Paste into .env, replace the key, then restart the application.
+LLM_PROVIDER=claude
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Optional. Defaults shown - omit any line you do not want to change.
+ANTHROPIC_MODEL=claude-opus-5
+ANTHROPIC_EFFORT=high          # low | medium | high | xhigh | max
+ANTHROPIC_THINKING=true        # adaptive thinking; the model sizes its own reasoning
+
+# Only for an Anthropic-compatible gateway or proxy. Leave it unset for the real API -
+# and read the note under this block before you set it.
+# ANTHROPIC_BASE_URL=https://your-gateway.example/v1
+"""
+
+#: ``ANTHROPIC_BASE_URL`` is a conventional variable that developer tooling exports, and
+#: pydantic-settings reads the process environment as well as ``.env``. An inherited value
+#: silently sends every piece of audit evidence to a different endpoint than the one the
+#: ``.env`` names, which is worth a sentence in plain language rather than a footnote.
+_BASE_URL_NOTE = (
+    "The base URL can arrive from your shell as well as from .env. Configuration is read "
+    "from the process environment first, so if ANTHROPIC_BASE_URL (or ANTHROPIC_API_KEY) "
+    "is exported in your shell profile, or by another tool that set it for this terminal, "
+    "that value wins over the file. If the effective base URL shown on this page is not "
+    "the one your .env names, check `env | grep ANTHROPIC` in the terminal you started "
+    "the application from - something in your shell set it."
+)
+
 
 def _mask_dsn(url: str) -> str:
     """Hide any password inside a connection string before it is displayed.
@@ -64,6 +102,58 @@ def _mask_dsn(url: str) -> str:
     """
     text = str(url or "")
     return re.sub(r"://([^:/@]+):([^@]+)@", r"://\1:***@", text)
+
+
+#: A settings field is treated as a secret when one of its underscore-separated words is
+#: one of these. Whole words rather than substrings, because ``llm_max_tokens`` contains
+#: "token" and is a perfectly ordinary number: masking it would hide a parameter the
+#: reproducibility record needs. Singular only, for the same reason - "tokens" is a count,
+#: "token" is a credential.
+_SECRET_NAME_WORDS = frozenset(
+    {"key", "secret", "token", "password", "passwd", "credential", "credentials"}
+)
+
+#: Values that mean "nothing is configured". ``Settings.redacted_dict`` has already
+#: replaced an unset key with the *string* ``"(not set)"`` by the time it reaches this
+#: page, and a non-empty string is truthy - so a plain truth test here would report an
+#: absent key as present, which is the one thing this panel must never do.
+_ABSENT_MARKERS = ("", "(not set)", "none", "null")
+
+
+def _is_configured(value: Any) -> bool:
+    """Whether a (possibly already-masked) secret field holds anything at all."""
+    if value is None:
+        return False
+    return str(value).strip().lower() not in _ABSENT_MARKERS
+
+
+def _looks_like_a_secret(field_name: Any) -> bool:
+    """Whether a settings field name names a credential rather than a parameter."""
+    words = str(field_name).lower().replace("-", "_").split("_")
+    return any(word in _SECRET_NAME_WORDS for word in words)
+
+
+def _redact_secrets(values: Dict[str, Any]) -> Dict[str, Any]:
+    """Second line of defence over whatever the configuration layer handed us.
+
+    ``Settings.redacted_dict`` masks the fields it knows about, which is the right place
+    for it. This is the belt to that pair of braces: the dump below renders *every*
+    setting, so a credential field added to ``Settings`` later - and not added to the
+    masking list - would appear on screen in full the day it was introduced. Matching on
+    the field name instead means the failure mode of a new secret is "shown as present",
+    not "shown".
+
+    It reduces already-fingerprinted values to presence as well, which loses nothing: the
+    fingerprint that lets an operator tell one key from another is still rendered above,
+    from ``Settings.provider_summary``, where it is deliberate rather than incidental.
+    """
+    out: Dict[str, Any] = {}
+    for key, value in values.items():
+        if _looks_like_a_secret(key):
+            out[key] = "(configured)" if _is_configured(value) else "(not set)"
+        else:
+            out[key] = value
+    return out
 
 
 def _prompt_metadata() -> Dict[str, Any]:
@@ -88,6 +178,90 @@ def _prompt_metadata() -> Dict[str, Any]:
     }
 
 
+def _provider_details(health: Dict[str, Any]) -> Dict[str, Any]:
+    """The full :func:`app.llm.factory.provider_health` payload, however this console runs.
+
+    In API mode it is already inside the ``/health`` body the facade fetched, so it is
+    read from there rather than computed locally: over HTTP the provider that matters is
+    the API process's, and this process's configuration would describe a provider that
+    never sees an assessment. In-process the same function is called directly - it makes
+    no network call and touches no database, which is what makes it safe on a page that
+    re-renders on every keystroke.
+    """
+    if data_access.use_api():
+        detail = dict(health.get("detail") or {})
+        return dict(detail.get("provider") or {})
+    try:
+        from app.llm.factory import provider_health
+
+        return dict(provider_health())
+    except Exception:  # noqa: BLE001 - the panel degrades rather than breaking the page
+        return {}
+
+
+def _render_provider_panel(details: Dict[str, Any]) -> None:
+    """Everything about the model that a reproducibility claim depends on.
+
+    Nothing here is a secret. The API key appears only as the boolean "is one
+    configured" - not the value, not a prefix, not a length - because this page is
+    screenshotted into a thesis appendix, and a fingerprint is a fingerprint even when it
+    is mostly asterisks. The Claude-specific rows (effort, adaptive thinking, base URL)
+    are shown only when Claude is the configured or the active provider, so the panel
+    stays a statement about *this* run rather than a catalogue of every provider the
+    build can construct.
+    """
+    if not details:
+        components.note(
+            "The provider detail is not exposed by the API this console is pointed at. "
+            "Read it from the API process: GET /api/v1/settings/providers."
+        )
+        return
+
+    configured = str(details.get("configured_provider", "") or "")
+    active = str(details.get("active_provider", "") or "")
+    per_provider = dict(details.get("providers") or {})
+    claude = dict(per_provider.get("claude") or {})
+    is_claude = "claude" in (configured.lower(), active.lower())
+
+    rows: Dict[str, Any] = {
+        "Configured provider (what .env asked for)": components.provider_display_name(configured),
+        "Active provider (what answers)": components.provider_display_name(active),
+        "Active model": details.get("active_model", "") or "(provider default)",
+    }
+    if is_claude:
+        rows.update(
+            {
+                "ANTHROPIC_API_KEY configured": "yes" if claude.get("api_key_configured") else "no",
+                "Anthropic SDK installed": "{0} ({1})".format(
+                    "yes" if claude.get("sdk_installed") else "no",
+                    claude.get("sdk_version", "unknown"),
+                ),
+                "Claude model": claude.get("model", ""),
+                "Reasoning effort (ANTHROPIC_EFFORT)": claude.get("effort", ""),
+                "Adaptive thinking (ANTHROPIC_THINKING)": "on"
+                if claude.get("adaptive_thinking")
+                else "off",
+                "Effective base URL": claude.get("base_url", ""),
+            }
+        )
+    components.kv_grid(rows, skip_empty=False)
+
+    if is_claude:
+        components.note(_BASE_URL_NOTE)
+        components.note(
+            "Claude is not called with a temperature. Current Claude models reject "
+            "sampling parameters outright, so reasoning depth is set by the effort level "
+            "above instead - which means two runs at the same effort are comparable, but "
+            "neither is bit-for-bit reproducible the way an offline run is."
+        )
+        if not claude.get("api_key_configured"):
+            st.info(
+                "No ANTHROPIC_API_KEY is configured, so Claude cannot be called. The "
+                "instructions further down this page say exactly what to add to .env.",
+                icon=":material/key_off:",
+            )
+
+
 def _render_status(summary: Dict[str, Any]) -> None:
     try:
         provider = data_access.provider_badge()
@@ -95,6 +269,8 @@ def _render_status(summary: Dict[str, Any]) -> None:
     except data_access.DataAccessError as exc:
         st.error("Could not read the provider status: {0}".format(exc))
         return
+
+    details = _provider_details(health)
 
     components.section_header(
         "What is answering right now",
@@ -112,10 +288,18 @@ def _render_status(summary: Dict[str, Any]) -> None:
         )
     if provider.get("fell_back_to_mock"):
         st.error(
-            "{0} was configured but is not usable, so the offline stand-in answered "
-            "instead. Any run recorded in this state must not be reported as a model "
-            "result.".format(provider.get("configured_provider", "A remote provider"))
+            "{0} was configured but is not usable, so **{1}** answered instead. {2} {3}".format(
+                components.provider_display_name(provider.get("configured_provider"))
+                if provider.get("configured_provider")
+                else "A remote provider",
+                components.provider_display_name(provider.get("active_provider")),
+                components.PROVIDER_MISMATCH_NOTE,
+                details.get("fallback_reason", ""),
+            ).strip(),
+            icon=":material/error:",
         )
+
+    _render_provider_panel(details)
 
     components.kv_grid(
         {
@@ -246,19 +430,37 @@ def _render_how_to_switch() -> None:
     st.markdown(
         "1. Edit the `.env` file in the project root (copy `.env.example` if it does not "
         "exist yet).\n"
-        "2. Set `LLM_PROVIDER` to `mock` for the offline stand-in, or to `openai` for any "
-        "OpenAI-compatible endpoint, and set `LLM_MODEL`, `LLM_API_KEY` and - for a "
-        "non-OpenAI endpoint - `LLM_BASE_URL` alongside it.\n"
+        "2. Set `LLM_PROVIDER` to `mock` for the offline stand-in, to `claude` for the "
+        "Anthropic API, or to `openai` for any OpenAI-compatible endpoint, and set the "
+        "matching key alongside it: `ANTHROPIC_API_KEY` for Claude, or `LLM_MODEL`, "
+        "`LLM_API_KEY` and - for a non-OpenAI endpoint - `LLM_BASE_URL` for the rest.\n"
         "3. Restart the application. Settings are read once at startup, so a running "
         "process keeps the configuration it started with.\n"
-        "4. Re-run any experiment whose numbers you intend to quote. Results produced "
+        "4. Check the badge in the sidebar. If the key is missing or wrong the "
+        "application starts anyway, falls back to the offline stand-in and says so - it "
+        "does not refuse to run, so the badge is how you confirm the switch worked.\n"
+        "5. Re-run any experiment whose numbers you intend to quote. Results produced "
         "under different settings are not comparable, and nothing recomputes them."
     )
+
+    st.markdown("**Turning Claude on**")
+    st.code(_ENV_CLAUDE, language="bash")
+    components.note(_BASE_URL_NOTE)
+    st.caption(
+        "The `anthropic` package must be installed for `LLM_PROVIDER=claude` to do "
+        "anything - it is in `requirements.txt`, so `pip install -r requirements.txt` "
+        "covers it. Without either the package or the key the application falls back to "
+        "the offline stand-in rather than failing to start."
+    )
+
+    st.markdown("**The rest of the file**")
     st.code(_ENV_EXAMPLE, language="bash")
     components.note(
         "The API key is read from the environment and is never written to the database, "
-        "into a report, or into an evaluation run's configuration blob - only a masked "
-        "fingerprint of it ever appears anywhere."
+        "into a report, or into an evaluation run's configuration blob. `ANTHROPIC_API_KEY` "
+        "is reported on this page as present or absent only - not even as a masked "
+        "fingerprint - and it never appears in a log line, an error message or an API "
+        "response."
     )
     if st.button("Re-read the environment now", key="settings_reload"):
         try:
@@ -454,12 +656,14 @@ def render() -> None:
                 "filesystem paths or connection string."
             )
         else:
-            safe = dict(redacted)
+            safe = _redact_secrets(redacted)
             safe["database_url"] = _mask_dsn(safe.get("database_url", ""))
             st.code(data_access.to_json(safe), language="json")
         components.note(
-            "API keys arrive here already masked by app.config.Settings.redacted_dict; "
-            "this page has no access to the values."
+            "API keys arrive here already masked by app.config.Settings.redacted_dict, "
+            "and this page reduces every field whose name looks like a credential to "
+            "'(configured)' or '(not set)' before rendering it. No key value is reachable "
+            "from this screen."
         )
 
 

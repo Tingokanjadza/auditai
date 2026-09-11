@@ -1,0 +1,134 @@
+# Render Blueprint: the API and the audit console as two web services.
+#
+# Deploy: push this repository to GitHub, then Render > New > Blueprint and point it at
+# the repo. Both services build from the same source with the same command; they differ
+# only in what they start and in what they are allowed to know.
+#
+# Railway and Fly read their own descriptors, but the shape below - two processes, each
+# binding 0.0.0.0:$PORT, sharing configuration through environment variables - is the
+# same one the Procfile describes, so porting is mechanical.
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE DEPLOYING
+#
+# The application has no authentication. Anything you deploy here is open to whoever
+# finds the URL: they can upload evidence, read it back, run assessments and delete
+# projects. Deploy it with synthetic data only, or put an authenticating proxy in front
+# of it. CORS_RESTRICT_TO_CONFIGURED below constrains browsers, not attackers.
+#
+# Three values are deliberately left empty and marked `sync: false`, so Render asks for
+# them in the dashboard instead of keeping them in version control:
+#   * ANTHROPIC_API_KEY - a secret, and secrets never belong in a repository;
+#   * PUBLIC_API_URL / PUBLIC_APP_URL / CORS_ALLOW_ORIGINS / API_BASE_URL - Render assigns
+#     each service its hostname when the service is created, and a blueprint cannot
+#     compose "https://" with a hostname into one variable. Fill these in after the first
+#     deploy (they are visible at the top of each service's page) and redeploy. Until you
+#     do, the API allows no cross-origin browser request at all - which is the intended
+#     failure mode: refusing traffic is safer than falling back to allowing everything.
+# ---------------------------------------------------------------------------
+
+services:
+  # ---- FastAPI backend ----------------------------------------------------
+  - type: web
+    name: llm-it-auditor-api
+    runtime: python
+    plan: free
+    # `anthropic` is installed separately because it cannot be installed on the Python
+    # 3.9 interpreter the project is developed against: the 1.x SDK requires >= 3.10.
+    # Here the runtime is 3.12, so it installs cleanly; without it the application still
+    # runs, on the offline mock provider.
+    buildCommand: pip install -r requirements.txt && pip install "anthropic>=1,<2"
+    startCommand: sh scripts/start_api.sh
+    healthCheckPath: /health
+    envVars:
+      # Matches runtime.txt. Render reads this variable first.
+      - key: PYTHON_VERSION
+        value: "3.12.11"
+      - key: ENVIRONMENT
+        value: production
+      # The offline deterministic provider, so a deployment works before any key exists.
+      # Set LLM_PROVIDER=claude once ANTHROPIC_API_KEY is filled in below.
+      - key: LLM_PROVIDER
+        value: mock
+      - key: ANTHROPIC_MODEL
+        value: claude-opus-5
+      - key: ANTHROPIC_EFFORT
+        value: high
+      # Secret: entered in the Render dashboard, never written here, never logged, never
+      # returned by the API (app/config.py masks it and the Settings page shows only a
+      # fingerprint). Leaving it unset makes the application fall back to the mock
+      # provider with a visible warning rather than fail.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Internet-facing, so only the origins named below may call this API from a
+      # browser. Empty list means no cross-origin caller is allowed.
+      - key: CORS_RESTRICT_TO_CONFIGURED
+        value: "true"
+      # e.g. https://llm-it-auditor-ui.onrender.com  (the console's own URL)
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+      - key: PUBLIC_APP_URL
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      # Human review stays mandatory. This is the safety rail that keeps an AI draft from
+      # being presented as an audit conclusion; it is set explicitly so that a deployment
+      # cannot quietly lose it.
+      - key: FORCE_HUMAN_REVIEW
+        value: "true"
+      # Never anything but 0.0 outside a controlled experiment: it makes the mock
+      # provider fabricate citations on purpose.
+      - key: MOCK_HALLUCINATION_RATE
+        value: "0.0"
+    # Free instances have an ephemeral filesystem: the SQLite database, uploaded evidence
+    # and generated reports are all lost on redeploy and on the idle shutdown. For
+    # anything you need to keep, either attach a disk (paid plan) -
+    #
+    #   disk:
+    #     name: audit-data
+    #     mountPath: /opt/render/project/src/data
+    #     sizeGB: 1
+    #
+    # - or move to PostgreSQL: add a `databases:` entry and set DATABASE_URL to its
+    # internal connection string, prefixed `postgresql+psycopg://`, then add
+    # `psycopg[binary]>=3.1` to the build command. The schema is already portable.
+
+  # ---- Streamlit audit console --------------------------------------------
+  - type: web
+    name: llm-it-auditor-ui
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: sh scripts/start_ui.sh
+    # Streamlit's own liveness endpoint; it answers before the app script has run.
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.11"
+      - key: ENVIRONMENT
+        value: production
+      # Talk to the API over HTTP rather than to the database in-process. Two service
+      # instances must not share one SQLite file, and on Render they could not anyway -
+      # each has its own filesystem.
+      - key: USE_API
+        value: "true"
+      # The API's URL, e.g. https://llm-it-auditor-api.onrender.com. This is the value
+      # app/frontend/api_client.py calls; PUBLIC_API_URL is only for display.
+      - key: API_BASE_URL
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: PUBLIC_APP_URL
+        sync: false
+      # No ANTHROPIC_API_KEY on this service, deliberately. With USE_API=true the console
+      # never calls a model itself - the backend does - so the key does not belong in the
+      # process that serves the browser. Least privilege, and one fewer place to leak it.
+      #
+      # Tracebacks stay out of the browser for the same reason: an unhandled error would
+      # otherwise print filesystem paths to anyone with the URL.
+      - key: STREAMLIT_CLIENT_SHOW_ERROR_DETAILS
+        value: none
+      # Streamlit serves this app from one origin behind Render's router, so its own CORS
+      # and XSRF protections stay on (see .streamlit/config.toml).
+      - key: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+        value: "false"

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from app.config import Settings, get_settings
 from app.llm.base import LLMProvider
+from app.llm.anthropic_provider import AnthropicProvider
 from app.llm.mock_provider import MockLLMProvider
 from app.llm.openai_provider import OpenAICompatibleProvider
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 #: Canonical provider names.
 MOCK = "mock"
 OPENAI = "openai"
+CLAUDE = "claude"
 
 #: Names people actually type. Every OpenAI-protocol gateway resolves to the same class;
 #: what distinguishes them is ``LLM_BASE_URL``, not the code path.
@@ -54,12 +56,16 @@ _ALIASES: Dict[str, str] = {
     "together": OPENAI,
     "groq": OPENAI,
     "local": OPENAI,
+    # Claude goes through the Anthropic SDK, not the OpenAI protocol, so it is a
+    # separate class rather than another base_url.
+    "claude": CLAUDE,
+    "anthropic": CLAUDE,
 }
 
 
 def available_providers() -> List[str]:
     """Canonical provider names this build can construct."""
-    return [MOCK, OPENAI]
+    return [MOCK, CLAUDE, OPENAI]
 
 
 def normalise_provider_name(name: Optional[str]) -> str:
@@ -93,13 +99,21 @@ def get_llm_provider(
     if canonical == MOCK:
         return MockLLMProvider(model=model or "", settings=resolved)
 
-    provider = OpenAICompatibleProvider(model=chosen_model, settings=resolved)
+    if canonical == CLAUDE:
+        provider: LLMProvider = AnthropicProvider(
+            model=model or resolved.anthropic_model, settings=resolved
+        )
+        missing = "ANTHROPIC_API_KEY is not set (or the 'anthropic' package is missing)"
+    else:
+        provider = OpenAICompatibleProvider(model=chosen_model, settings=resolved)
+        missing = "neither LLM_API_KEY nor LLM_BASE_URL is set"
+
     if not provider.is_available():
         logger.warning(
-            "LLM provider %r was selected but neither LLM_API_KEY nor LLM_BASE_URL is set. "
-            "Falling back to the offline mock provider - any results produced now measure the "
-            "pipeline, not a language model.",
+            "LLM provider %r was selected but %s. Falling back to the offline mock provider - "
+            "any results produced now measure the pipeline, not a language model.",
             canonical,
+            missing,
         )
         return MockLLMProvider(model=model or "", settings=resolved)
     return provider
@@ -115,19 +129,20 @@ def provider_health(settings: Optional[Settings] = None) -> Dict[str, Any]:
     configured = normalise_provider_name(resolved.llm_provider)
     active = get_llm_provider(settings=resolved)
     fell_back = configured != MOCK and active.name == MOCK
+    reasons = {
+        CLAUDE: "ANTHROPIC_API_KEY is not configured, or the 'anthropic' package is not installed.",
+        OPENAI: "Neither LLM_API_KEY nor LLM_BASE_URL is configured for the selected provider.",
+    }
     return {
         "configured_provider": configured,
         "active_provider": active.name,
         "active_model": active.model,
         "fell_back_to_mock": fell_back,
-        "fallback_reason": (
-            "Neither LLM_API_KEY nor LLM_BASE_URL is configured for the selected provider."
-            if fell_back
-            else ""
-        ),
+        "fallback_reason": reasons.get(configured, "") if fell_back else "",
         "available_providers": available_providers(),
         "providers": {
             MOCK: MockLLMProvider(settings=resolved).health(),
+            CLAUDE: AnthropicProvider(settings=resolved).health(),
             OPENAI: OpenAICompatibleProvider(settings=resolved).health(),
         },
         "settings": resolved.provider_summary(),

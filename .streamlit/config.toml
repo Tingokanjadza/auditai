@@ -1,0 +1,83 @@
+# Streamlit server and theme configuration.
+#
+# Two audiences read this file: a developer running `python run.py ui` on a laptop, and a
+# platform (Streamlit Community Cloud, Render, Railway, Docker) starting the same app with
+# no terminal attached. The settings below are the ones that are correct in both places;
+# anything that must differ per environment is an environment variable, because Streamlit
+# resolves CLI flags above environment variables above this file, and this file cannot
+# interpolate a variable.
+#
+# In particular there is no way to write `port = $PORT` here. The port a platform injects
+# as $PORT reaches Streamlit from scripts/start_ui.sh as --server.port, which overrides the
+# value below; `port` here is only the local default.
+#
+# Verified against streamlit==1.50.0 (`streamlit config show` accepts every key used here).
+
+[server]
+# No browser to open and no terminal to prompt on: headless also suppresses the
+# first-run "enter your email" prompt, which would otherwise block a container start.
+headless = true
+
+# Listen on every interface. A container or dyno that binds 127.0.0.1 is reachable only
+# from inside itself. On a laptop `python run.py ui` is the supported path and Streamlit
+# is still only as exposed as the machine's own network.
+address = "0.0.0.0"
+
+# Local default only - see the note about $PORT above.
+port = 8501
+
+# Both protections stay ON, which is also what Streamlit Community Cloud expects.
+# They are listed explicitly rather than left implicit because the common "fix" for a
+# websocket that will not connect behind a proxy is to switch enableCORS off, and that is
+# the wrong move here: Streamlit ignores enableCORS = false while XSRF protection is on
+# (it logs that it is overriding the value), so the only thing the change achieves is a
+# confusing log line. A proxy that serves the app from a single origin needs neither.
+enableCORS = true
+enableXsrfProtection = true
+
+# Matches MAX_UPLOAD_MB in .env.example, so an evidence file that the API would accept is
+# not silently rejected by the UI - or the reverse.
+maxUploadSize = 50
+
+[browser]
+# A research prototype handling audit evidence should phone home about nothing.
+gatherUsageStats = false
+
+[client]
+# toolbarMode is deliberately left at "auto": Streamlit then shows the developer menu
+# locally and the minimal one when the app is deployed, which is the behaviour wanted in
+# both places.
+#
+# Tracebacks are shown in full locally, which is what a developer needs. On a deployed
+# instance set STREAMLIT_CLIENT_SHOW_ERROR_DETAILS=none (render.yaml does): an unhandled
+# error can otherwise print filesystem paths into a browser that anyone can open.
+showErrorDetails = "full"
+
+# ---------------------------------------------------------------------------
+# Theme. Every value below is copied verbatim from app/frontend/theme.py, which is the
+# single source of colour for the whole console (it exports the same block as
+# theme.CONFIG_TOML). Two palettes that drift apart would show up immediately: the CSS in
+# theme.py paints the panels, while these tokens paint the chrome Streamlit owns - the
+# top bar, widgets, tooltips and menus. They must be the same dark console.
+# ---------------------------------------------------------------------------
+[theme]
+base = "dark"
+primaryColor = "#58A6FF"            # theme.ACCENT
+backgroundColor = "#0B0F14"         # theme.BG
+secondaryBackgroundColor = "#151D28"  # theme.SURFACE
+textColor = "#E8EEF4"               # theme.TEXT
+borderColor = "#2A3949"             # theme.BORDER
+font = "sans-serif"
+
+# Semantic hues, so Streamlit's own coloured text, alerts and badges speak the same
+# colour vocabulary the status pills and risk badges use. Values are theme.GREEN,
+# theme.AMBER, theme.ORANGE, theme.RED, theme.VIOLET, theme.GREY and theme.ACCENT.
+greenColor = "#3FB950"
+yellowColor = "#E0A82E"
+orangeColor = "#F0883E"
+redColor = "#F85149"
+violetColor = "#A371F7"
+grayColor = "#8B949E"
+blueColor = "#58A6FF"
+linkColor = "#58A6FF"
+codeBackgroundColor = "#1B2532"     # theme.SURFACE_ALT

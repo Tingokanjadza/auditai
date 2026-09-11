@@ -1,0 +1,66 @@
+# What must not enter the build context.
+#
+# Three reasons a line appears here: it is a secret that must never exist in an image
+# layer (layers are readable by anyone who can pull the image, and deleting a file in a
+# later layer does not remove it from the earlier one); it is generated data that belongs
+# in a volume rather than in an image; or it is large and would be copied on every build.
+#
+# The exclusions mirror .gitignore rather than relying on re-inclusion patterns, so that
+# data/controls/control_library.json - which the startup seeding genuinely needs - is
+# simply never excluded in the first place.
+
+# ---- secrets -------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+.streamlit/secrets.toml
+
+# ---- local virtualenv ----------------------------------------------------
+# macOS/CPython 3.9 binaries: useless inside a Linux 3.12 image, and hundreds of MB.
+.venv/
+venv/
+env/
+ENV/
+
+# ---- version control -----------------------------------------------------
+.git/
+.gitattributes
+.github/
+
+# ---- generated runtime data ----------------------------------------------
+# The database, uploaded evidence and generated reports live in a volume. Baking a
+# database into an image would also ship whatever evidence the author had loaded.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/uploads/*
+data/reports/*
+data/evaluation/*
+data/synthetic/*
+data/sample_evidence/*
+logs/
+*.log
+
+# ---- caches --------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# ---- editors and OS ------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp

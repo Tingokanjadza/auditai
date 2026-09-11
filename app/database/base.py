@@ -7,6 +7,7 @@ types, no database-native ENUMs, and timestamps stored as timezone-aware
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator
@@ -15,6 +16,8 @@ from sqlalchemy import JSON, Engine, MetaData, event, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -82,17 +85,43 @@ def utcnow() -> datetime:
 
 
 def init_db() -> None:
-    """Create any missing tables. Safe to call repeatedly."""
+    """Bring the database fully up to date. Safe to call repeatedly.
+
+    Three steps, in an order that matters:
+
+    1. ``create_all`` builds any table that does not exist. This is all a fresh clone
+       needs, and it is blind to columns - see :mod:`app.database.migrations`.
+    2. :func:`~app.database.migrations.reconcile_schema` adds columns the models have
+       gained since an *existing* database was created. It runs second because a table
+       created in step 1 is already current and because reconciling a table while
+       ``create_all`` is building it would be a race.
+    3. :func:`~app.database.views.create_findings_view` (re)creates the ``findings``
+       view. It runs last because the view reads columns that steps 1 and 2 may have
+       only just created.
+
+    Neither step 2 nor step 3 raises: a start-up that cannot reconcile a column or build
+    a convenience view must still yield a running application, because a missing column
+    is diagnosable and a process that refuses to boot is not.
+    """
     from app.database import models  # noqa: F401  (registers mappers)
+    from app.database.migrations import reconcile_schema
+    from app.database.views import create_findings_view
 
     settings.ensure_directories()
     Base.metadata.create_all(bind=engine)
+    for change in reconcile_schema(engine):
+        logger.info("Schema reconciliation: %s", change)
+    create_findings_view(engine)
 
 
 def drop_all() -> None:
     """Destructive: used by tests and by the explicit 'reset demo data' action."""
     from app.database import models  # noqa: F401
+    from app.database.views import drop_findings_view
 
+    # The view must go first: on PostgreSQL a DROP TABLE fails outright while a view
+    # still depends on the table.
+    drop_findings_view(engine)
     Base.metadata.drop_all(bind=engine)
 
 

@@ -78,6 +78,21 @@ class Settings(BaseSettings):
     #: Ask the provider for a JSON-schema-constrained response when it supports it.
     llm_use_json_mode: bool = True
 
+    # ----------------------------------------------------------------- Claude
+    #: Anthropic credentials. Set ANTHROPIC_API_KEY and the provider becomes available;
+    #: leave it unset and the application falls back to the offline mock with a visible
+    #: notice. The key is never logged, never returned by the API and never rendered.
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-opus-5"
+    #: Only for Anthropic-compatible gateways/proxies; leave unset for the real API.
+    anthropic_base_url: Optional[str] = None
+    #: Reasoning depth for Claude: low | medium | high | xhigh | max. Audit reasoning is
+    #: non-trivial, so "high" is the default; drop to "low" for cheap bulk runs.
+    anthropic_effort: str = "high"
+    #: Adaptive thinking. Current Claude models reject a fixed token budget, and they
+    #: reject `temperature` outright - determinism is controlled by effort, not sampling.
+    anthropic_thinking: bool = True
+
     #: Research lever: fraction of mock assessments that deliberately fabricate a
     #: citation or an unsupported claim, so the validation layer can be exercised
     #: and measured offline. 0.0 disables. Never enable outside experiments.
@@ -109,6 +124,23 @@ class Settings(BaseSettings):
     #: Safety rail: the UI must never present an AI assessment as a final decision.
     force_human_review: bool = True
     citation_match_threshold: float = 0.6
+
+    # ------------------------------------------------------------- deployment
+    #: Public URLs of the deployed services. Used for CORS and for any link the app
+    #: renders. Left at the localhost defaults these change nothing; set them when the
+    #: app is deployed so no hostname is baked into the code.
+    public_app_url: Optional[str] = None
+    public_api_url: Optional[str] = None
+    #: Comma-separated extra origins permitted by CORS, e.g.
+    #: "https://audit.example.edu,https://myapp.streamlit.app". Localhost is always
+    #: allowed in development; in production ONLY these origins are allowed.
+    cors_allow_origins: str = ""
+    #: When true the API stops trusting localhost automatically and permits only the
+    #: origins named above. Turn this on for any internet-facing deployment.
+    cors_restrict_to_configured: bool = False
+    #: Route the Streamlit UI through the HTTP API instead of the in-process service
+    #: layer. Needed when the UI and API are deployed as separate services.
+    use_api: bool = False
 
     # ------------------------------------------------------------- evaluation
     evaluation_output_dir: Path = BASE_DIR / "data" / "evaluation"

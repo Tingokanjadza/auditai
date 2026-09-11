@@ -17,8 +17,11 @@ Why the provider badge is loud
 ------------------------------
 The offline provider is a deterministic rule-based stand-in, not a language model. A
 screenshot of this console taken during a research demonstration must not be mistakable
-for a model run, so the sidebar states which provider actually answered - including the
-case where a real one was configured but unavailable and the factory fell back.
+for a model run, so the sidebar states which provider actually answered - including, in
+red and in words, the case where a real one was configured but unavailable and the
+factory fell back to the mock. "AI Provider: Claude" and "AI Provider: Mock" are
+different claims about what a number on the Evaluation page means, and the sidebar is
+the only place that distinction is visible on every page.
 """
 
 from __future__ import annotations
@@ -120,12 +123,31 @@ def _render_brand() -> None:
 
 
 def _render_provider() -> None:
+    """The sidebar's answer to "which AI produced what I am looking at?".
+
+    The badge names the provider that *answered*. When that is not the provider the
+    ``.env`` selected - Claude configured, no ``ANTHROPIC_API_KEY``, so the offline
+    stand-in ran - the mismatch is repeated as a native ``st.error`` underneath it. The
+    duplication is on purpose: the badge is styled HTML and the alert is not, so the
+    warning survives a stylesheet that failed to load, and an alert is harder to read
+    past than a caption. A researcher must never believe a run used Claude when it did
+    not.
+    """
     try:
         info = data_access.provider_badge()
     except data_access.DataAccessError as exc:
         st.warning("Provider status unavailable: {0}".format(exc))
         return
     components.provider_banner(info)
+    if info.get("fell_back_to_mock"):
+        st.error(
+            "{0} was configured, but **{1}** is answering. {2}".format(
+                components.provider_display_name(info.get("configured_provider")),
+                components.provider_display_name(info.get("active_provider")),
+                components.PROVIDER_MISMATCH_NOTE,
+            ),
+            icon=":material/error:",
+        )
     if info.get("is_mock"):
         st.caption(components.MOCK_PROVIDER_NOTE)
 

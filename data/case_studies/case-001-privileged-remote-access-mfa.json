@@ -1,0 +1,317 @@
+{
+  "schema_version": "1.0",
+  "case_id": "CASE-001",
+  "title": "Privileged and third-party remote access without enforced multi-factor authentication",
+  "provenance": "HISTORICAL_PUBLIC",
+  "organisation_label": "Aldermere Regional Utilities (fictional)",
+  "audit_area": "Logical access and third-party remote access",
+  "period_start": "2024-01-01",
+  "period_end": "2024-06-30",
+  "export_date": "2024-06-30",
+  "incident": {
+    "pattern_name": "Credential-based intrusion through a remote-access account that was never enrolled in multi-factor authentication",
+    "summary": "Public breach reporting, national cyber-security advisories and annual industry breach studies repeatedly describe the same sequence: an organisation's authentication policy requires a second factor, enforcement is applied to interactive staff accounts but not to a residual population of service, break-glass, legacy maintenance and vendor accounts, and an attacker authenticates to one of those accounts with a stolen or re-used password alone. The account is frequently dormant, so nobody notices the logon, and the alerts that do fire on the resulting privileged activity are not reviewed within the timescale the monitoring procedure states. This case study reconstructs that documented pattern as evidence an auditor could actually test.",
+    "documented_sequence": [
+      "An authentication policy requires multi-factor authentication for privileged access and states that any account which cannot be enrolled must be recorded in an exception register with a named approver and an expiry date.",
+      "Enforcement is applied through a platform policy scoped to interactive administrator accounts, leaving service accounts, break-glass accounts, legacy remote-maintenance accounts and vendor accounts outside its scope.",
+      "No exception register is maintained, so the residual population is neither approved nor tracked, and its size is unknown to management.",
+      "A remote-access account belonging to that residual population is dormant: it retains its entitlements while no account owner is watching it.",
+      "An attacker authenticates to that account using a password obtained elsewhere. Only one factor is required, so the credential alone is sufficient.",
+      "Detection rules raise alerts on the resulting out-of-hours administrative logon and privileged group membership change, but the alerts are never triaged, so the intrusion is not acted upon.",
+      "Third-party access to the same environment is found to run partly on shared, non-expiring vendor credentials, so activity during the period cannot be attributed to an individual."
+    ],
+    "why_reconstructed": "The failure pattern above is public, well documented and generic. The specific evidence artefacts of any real incident are not public: no auditor outside the affected organisation has seen its account listings, its alert queue or its vendor access register. Reconstructing those artefacts is the only way to exercise an audit tool against this pattern, and doing so under a fictional organisation name is the only way to reconstruct them without asserting facts about a named company that this project cannot source."
+  },
+  "sourcing_policy": "A URL is recorded only where the resource was retrieved and its title confirmed while this manifest was written, and only for durable publications of standards bodies and established industry reports. No URL is recorded for reporting about any specific incident, and no specific incident, company or regulator finding is named anywhere in this case study. Sources describe the general failure pattern; they are not citations for any particular claim about any particular organisation.",
+  "public_sources": [
+    {
+      "title": "NIST Special Publication 800-63B, Digital Identity Guidelines: Authentication and Lifecycle Management",
+      "publisher": "National Institute of Standards and Technology (US Department of Commerce)",
+      "url": "https://pages.nist.gov/800-63-3/sp800-63b.html",
+      "url_confirmed": true,
+      "relevance": "Defines the authenticator assurance levels that require possession and control of two distinct authentication factors. It is the public standard against which 'the policy required a second factor' is a meaningful statement."
+    },
+    {
+      "title": "Cybersecurity Alerts & Advisories",
+      "publisher": "Cybersecurity and Infrastructure Security Agency (US Department of Homeland Security)",
+      "url": "https://www.cisa.gov/news-events/cybersecurity-advisories",
+      "url_confirmed": true,
+      "relevance": "The public, searchable catalogue of advisories describing intrusion campaigns, including intrusions that begin with valid credentials on remote-access services. It is the standing source for the failure pattern; no individual advisory is cited here."
+    },
+    {
+      "title": "Data Breach Investigations Report (published annually)",
+      "publisher": "Verizon Business",
+      "url": "https://www.verizon.com/business/resources/reports/dbir/",
+      "url_confirmed": true,
+      "relevance": "Annual industry study of how breaches begin, reporting on stolen credentials, the human element and third-party involvement as recurring initial-access routes. Used here for the general prevalence of the pattern, not for any figure quoted in the reconstructed evidence."
+    },
+    {
+      "title": "Public post-incident disclosures, regulatory filings and parliamentary or congressional testimony describing intrusions that began with a remote-access account not enrolled in multi-factor authentication",
+      "publisher": "Various; described generically and deliberately not attributed",
+      "url": "",
+      "url_confirmed": false,
+      "relevance": "The failure pattern reconstructed here is drawn from this body of public reporting in aggregate. No single disclosure is cited, no organisation is named, and no URL is asserted, because this project cannot verify which specific report a reader would find at any given address."
+    }
+  ],
+  "control_refs": [
+    "CONTROL-001",
+    "CONTROL-002",
+    "CONTROL-012",
+    "CONTROL-013"
+  ],
+  "files": [
+    {
+      "filename": "CS001_Remote_Access_Authentication_Policy.md",
+      "format": "text",
+      "evidence_type": "POLICY",
+      "role": "requirement",
+      "description": "Reconstructed authentication policy stating the multi-factor requirement for privileged and third-party remote access, and the exception-register requirement.",
+      "body": [
+        "# Remote Access and Authentication Policy",
+        "",
+        "Document reference: POL-SEC-004 | Version 3.1 | Effective 1 January 2024 | Owner: Head of Information Security",
+        "",
+        "## 1. Purpose and scope",
+        "",
+        "This policy applies to every account able to authenticate to Aldermere Regional Utilities systems from outside the corporate network, and to every account classified as privileged, wherever it authenticates from. It applies equally to accounts held by employees, by contractors and by third-party vendor personnel.",
+        "",
+        "## 2. Multi-factor authentication requirement",
+        "",
+        "Every account classified as privileged must be enrolled in the organisation's multi-factor authentication solution before privileged access is granted. Privileged accounts include domain and local administrators, database administrators, security tool administrators, break-glass and emergency-access accounts, remote maintenance accounts, and service accounts that are permitted interactive logon.",
+        "",
+        "Enrolment is enforced centrally by a platform policy applied to the privileged account group. Enrolment is not an individual account holder's decision and must not be left to opt-in.",
+        "",
+        "All third-party and vendor remote access must use multi-factor authentication without exception. A password alone must never be sufficient to establish a remote session.",
+        "",
+        "## 3. Exceptions",
+        "",
+        "Any account that cannot be enrolled in multi-factor authentication must be recorded in the multi-factor authentication exception register. Each entry must name the approver, describe the compensating control applied, and state an expiry date no more than 90 days after approval. An account that is not enrolled and not on the register is a policy breach and must be disabled.",
+        "",
+        "## 4. Third-party accounts",
+        "",
+        "Vendor personnel are issued individually named accounts. Shared or generic vendor credentials are prohibited. Every third-party account must name an internal sponsor, reference the contract or engagement it was granted under, and carry an expiry date.",
+        "",
+        "## 5. Monitoring",
+        "",
+        "Authentication to privileged and remote-access accounts is logged. Detection rules raise alerts on out-of-hours administrative logon, privileged group membership change, repeated failed privileged authentication and break-glass account use. The review obligations for those alerts are set out in the Access Management and Monitoring Standard."
+      ]
+    },
+    {
+      "filename": "CS001_Access_Management_Standard.md",
+      "format": "text",
+      "evidence_type": "STANDARD",
+      "role": "requirement",
+      "description": "Reconstructed access management standard stating the numeric dormancy threshold, the third-party expiry limit and the alert review timescales.",
+      "body": [
+        "# Access Management and Monitoring Standard",
+        "",
+        "Document reference: STD-SEC-011 | Version 2.4 | Effective 1 January 2024 | Owner: Head of Information Security",
+        "",
+        "## 1. Account inactivity threshold",
+        "",
+        "An enabled account with no successful authentication for more than 90 days is dormant and must be disabled. An account that has never authenticated more than 30 days after its creation date is also dormant and must be disabled. Either may be retained only through a documented exception naming the business owner and the reason for retention.",
+        "",
+        "Account activity is reviewed against the identity store at least monthly. Disabling must be evidenced by a status change and a date, not by a ticket requesting it.",
+        "",
+        "## 2. Third-party account expiry",
+        "",
+        "Every active third-party account must carry an expiry date that is set and is no more than 90 days beyond the current date. Third-party accounts are reviewed at each renewal against the sponsoring contract reference.",
+        "",
+        "## 3. Alert review timescales",
+        "",
+        "Each alert raised by a privileged-activity detection rule must be triaged, assigned a named reviewer and given a terminal status of Closed or Escalated.",
+        "",
+        "High severity alerts must be reviewed within one business day of the date raised. Medium severity alerts must be reviewed within five business days. No alert raised more than 30 days before the current date may remain in an Open or unreviewed state.",
+        "",
+        "## 4. Break-glass accounts",
+        "",
+        "Every use of a break-glass or emergency-access account must raise an alert and must be supported by a documented business justification recorded at the time of use."
+      ]
+    },
+    {
+      "filename": "CS001_Privileged_Account_Listing.csv",
+      "format": "table",
+      "evidence_type": "USER_LISTING",
+      "role": "population",
+      "description": "Reconstructed privileged account listing as at 30 June 2024, showing enrolment status, account status and last successful logon for each privileged account.",
+      "columns": [
+        "Account_Name",
+        "Account_Type",
+        "Department",
+        "MFA_Status",
+        "Account_Status",
+        "Last_Login",
+        "Created_Date",
+        "Export_Date"
+      ],
+      "rows": [
+        ["adm.k.oyelaran", "Domain Admin", "IT Infrastructure", "Enabled", "Enabled", "2024-06-27", "2019-03-11", "2024-06-30"],
+        ["adm.j.whitcombe", "Domain Admin", "IT Infrastructure", "Enabled", "Enabled", "2024-06-28", "2020-07-02", "2024-06-30"],
+        ["adm.p.adeyemi", "Server Admin", "IT Operations", "Enabled", "Enabled", "2024-06-25", "2021-01-18", "2024-06-30"],
+        ["adm.l.mbeki", "Database Admin", "Data Services", "Enabled", "Enabled", "2024-06-26", "2018-09-30", "2024-06-30"],
+        ["adm.s.ferreira", "Database Admin", "Data Services", "Enabled", "Enabled", "2024-06-24", "2022-02-14", "2024-06-30"],
+        ["adm.r.nakamura", "Security Admin", "Information Security", "Enabled", "Enabled", "2024-06-28", "2020-11-05", "2024-06-30"],
+        ["adm.t.abubakar", "Security Admin", "Information Security", "Enabled", "Enabled", "2024-06-21", "2021-06-22", "2024-06-30"],
+        ["adm.c.dlamini", "Network Admin", "IT Infrastructure", "Enabled", "Enabled", "2024-06-20", "2019-05-13", "2024-06-30"],
+        ["svc-backup-014", "Service Account", "IT Operations", "Not Enrolled", "Enabled", "2024-06-29", "2017-04-03", "2024-06-30"],
+        ["svc-scada-hist-02", "Service Account", "Operational Technology", "Not Enrolled", "Enabled", "2024-06-29", "2016-08-19", "2024-06-30"],
+        ["svc-billing-sync", "Service Account", "Finance Systems", "Enabled", "Enabled", "2024-06-30", "2021-10-01", "2024-06-30"],
+        ["vpn.legacy.maint", "Remote Maintenance", "Operational Technology", "Not Enrolled", "Enabled", "2024-01-16", "2015-02-09", "2024-06-30"],
+        ["adm.b.okonkwo", "Server Admin", "IT Operations", "Enabled", "Enabled", "2024-06-18", "2022-09-12", "2024-06-30"],
+        ["adm.m.santos", "Server Admin", "IT Operations", "Enabled", "Enabled", "2024-06-19", "2023-01-23", "2024-06-30"],
+        ["adm.g.haruna", "Application Admin", "Billing Systems", "Enabled", "Enabled", "2024-06-17", "2020-03-04", "2024-06-30"],
+        ["adm.i.chukwu", "Application Admin", "Billing Systems", "Enabled", "Disabled", "2024-02-02", "2019-12-01", "2024-06-30"],
+        ["adm.f.moyo", "Network Admin", "IT Infrastructure", "Enabled", "Enabled", "2024-06-26", "2021-04-27", "2024-06-30"],
+        ["adm.d.ngcobo", "Domain Admin", "IT Infrastructure", "Enabled", "Enabled", "2024-06-27", "2018-06-15", "2024-06-30"],
+        ["brk.glass.001", "Break-Glass", "Information Security", "Not Enrolled", "Enabled", "2024-03-08", "2017-01-20", "2024-06-30"],
+        ["adm.v.tshabalala", "Storage Admin", "IT Operations", "Enabled", "Enabled", "2024-06-22", "2022-11-08", "2024-06-30"],
+        ["adm.n.eze", "Storage Admin", "IT Operations", "Enabled", "Enabled", "2024-06-23", "2023-05-16", "2024-06-30"],
+        ["svc-monitor-07", "Service Account", "Information Security", "Enabled", "Enabled", "2024-06-30", "2020-02-11", "2024-06-30"],
+        ["adm.a.kowalski", "Application Admin", "Billing Systems", "Enabled", "Enabled", "Never", "2024-01-05", "2024-06-30"]
+      ]
+    },
+    {
+      "filename": "CS001_Third_Party_Remote_Access_Accounts.csv",
+      "format": "table",
+      "evidence_type": "USER_LISTING",
+      "role": "population",
+      "description": "Reconstructed third-party remote access account register as at 30 June 2024, showing sponsor, enrolment status, expiry date and the access request and contract references.",
+      "columns": [
+        "Vendor_Name",
+        "Account_Name",
+        "Sponsor",
+        "Account_Status",
+        "MFA_Status",
+        "Account_Expiry_Date",
+        "Access_Request_Ref",
+        "Contract_Ref",
+        "Export_Date"
+      ],
+      "rows": [
+        ["Calder Process Systems", "vnd.calder.mjansen", "K. Oyelaran", "Enabled", "Enabled", "2024-08-31", "AR-2024-0418", "CT-2019-114", "2024-06-30"],
+        ["Calder Process Systems", "vnd.calder.rdube", "K. Oyelaran", "Enabled", "Enabled", "2024-08-31", "AR-2024-0419", "CT-2019-114", "2024-06-30"],
+        ["Halloway Metering", "vnd.halloway.support", "P. Adeyemi", "Enabled", "Not Enrolled", "NOT SET", "NOT SET", "CT-2018-052", "2024-06-30"],
+        ["Halloway Metering", "vnd.halloway.tfielding", "P. Adeyemi", "Enabled", "Enabled", "2024-07-15", "AR-2024-0377", "CT-2018-052", "2024-06-30"],
+        ["Brightpath Analytics", "vnd.brightpath.aokafor", "L. Mbeki", "Enabled", "Enabled", "2024-09-30", "AR-2024-0402", "CT-2023-009", "2024-06-30"],
+        ["Brightpath Analytics", "vnd.brightpath.shenning", "L. Mbeki", "Disabled", "Enabled", "2024-03-31", "AR-2024-0201", "CT-2023-009", "2024-06-30"],
+        ["Orrin Controls", "vnd.orrin.maint", "C. Dlamini", "Enabled", "Not Enrolled", "NOT SET", "NOT SET", "NOT SET", "2024-06-30"],
+        ["Orrin Controls", "vnd.orrin.jbaptiste", "C. Dlamini", "Enabled", "Enabled", "2024-07-31", "AR-2024-0433", "CT-2021-076", "2024-06-30"],
+        ["Tarrant Field Services", "vnd.tarrant.emorgan", "F. Moyo", "Enabled", "Enabled", "2026-12-31", "AR-2024-0350", "CT-2022-033", "2024-06-30"],
+        ["Tarrant Field Services", "vnd.tarrant.crossi", "F. Moyo", "Enabled", "Not Enrolled", "2024-07-31", "AR-2024-0351", "CT-2022-033", "2024-06-30"]
+      ]
+    },
+    {
+      "filename": "CS001_Privileged_Alert_Review_Export.csv",
+      "format": "table",
+      "evidence_type": "LOG_EXTRACT",
+      "role": "operation",
+      "description": "Reconstructed privileged-activity alert export for 1 January to 30 June 2024, showing the disposition, named reviewer and review date of each alert raised.",
+      "columns": [
+        "Alert_ID",
+        "Alert_Date",
+        "Alert_Rule",
+        "Severity",
+        "Source_Account",
+        "Alert_Status",
+        "Reviewer",
+        "Review_Date",
+        "Export_Date"
+      ],
+      "rows": [
+        ["ALR-2024-0311", "2024-01-16", "Out-of-hours administrative logon", "High", "vpn.legacy.maint", "Open", "NOT SET", "NOT SET", "2024-06-30"],
+        ["ALR-2024-0312", "2024-01-16", "Privileged group membership change", "High", "vpn.legacy.maint", "Open", "NOT SET", "NOT SET", "2024-06-30"],
+        ["ALR-2024-0318", "2024-01-17", "Repeated failed privileged authentication", "Medium", "adm.p.adeyemi", "Closed", "R. Nakamura", "2024-01-18", "2024-06-30"],
+        ["ALR-2024-0344", "2024-02-05", "Break-glass account used", "High", "brk.glass.001", "Open", "NOT SET", "NOT SET", "2024-06-30"],
+        ["ALR-2024-0357", "2024-02-19", "Out-of-hours administrative logon", "Medium", "adm.b.okonkwo", "Closed", "T. Abubakar", "2024-02-20", "2024-06-30"],
+        ["ALR-2024-0402", "2024-03-08", "Break-glass account used", "High", "brk.glass.001", "Open", "NOT SET", "NOT SET", "2024-06-30"],
+        ["ALR-2024-0455", "2024-04-02", "Privileged group membership change", "High", "adm.k.oyelaran", "Closed", "R. Nakamura", "2024-04-03", "2024-06-30"],
+        ["ALR-2024-0478", "2024-04-19", "Repeated failed privileged authentication", "High", "vnd.halloway.support", "Open", "NOT SET", "NOT SET", "2024-06-30"],
+        ["ALR-2024-0506", "2024-05-07", "Out-of-hours administrative logon", "Medium", "adm.m.santos", "Closed", "T. Abubakar", "2024-05-08", "2024-06-30"],
+        ["ALR-2024-0533", "2024-05-22", "Privileged group membership change", "Medium", "adm.d.ngcobo", "Closed", "R. Nakamura", "2024-05-24", "2024-06-30"],
+        ["ALR-2024-0561", "2024-06-04", "Repeated failed privileged authentication", "High", "vnd.orrin.maint", "Open", "NOT SET", "NOT SET", "2024-06-30"],
+        ["ALR-2024-0588", "2024-06-17", "Out-of-hours administrative logon", "High", "vnd.orrin.maint", "Escalated", "R. Nakamura", "2024-06-18", "2024-06-30"],
+        ["ALR-2024-0594", "2024-06-21", "Break-glass account used", "Medium", "brk.glass.001", "Closed", "T. Abubakar", "2024-06-24", "2024-06-30"],
+        ["ALR-2024-0601", "2024-06-26", "Privileged group membership change", "High", "adm.j.whitcombe", "Closed", "R. Nakamura", "2024-06-27", "2024-06-30"]
+      ]
+    },
+    {
+      "filename": "CS001_Case_Study_Provenance_Notice.md",
+      "format": "text",
+      "evidence_type": "OTHER",
+      "role": "provenance",
+      "description": "Standing notice recording what this engagement's evidence is, where the failure pattern was drawn from, and what must never be claimed on the basis of it.",
+      "body": [
+        "# What this engagement's evidence is, and what it is not",
+        "",
+        "Every artefact in this engagement was generated by the case-study importer of the LLM-Assisted IT Audit research prototype. Nothing here was obtained from any organisation.",
+        "",
+        "## The organisation is fictional",
+        "",
+        "Aldermere Regional Utilities does not exist. Its departments, account names, vendor names, contract references, alert identifiers and dates are invented. Any resemblance to a real entity is coincidental and unintended.",
+        "",
+        "## The failure pattern is real and public",
+        "",
+        "What is not invented is the shape of the failure. Public breach reporting, national cyber-security advisories and annual industry breach studies repeatedly document intrusions that begin with a remote-access account which the organisation's own policy required to use multi-factor authentication, and which was never enrolled. The reconstruction plants that pattern in testable evidence so that an audit tool can be exercised against it.",
+        "",
+        "## What may and may not be concluded",
+        "",
+        "A finding produced from this evidence is a statement about this reconstruction. It is not a finding about any real organisation, it is not evidence that any named company failed any control, and it must never be reported as either. It also does not establish that the tool would reach the same conclusion on real audit evidence, which is contradictory, partial and undated in ways that nothing here reproduces."
+      ]
+    }
+  ],
+  "expected_outcomes": [
+    {
+      "control_ref": "CONTROL-001",
+      "expected_status": "POTENTIAL_DEFICIENCY",
+      "expected_risk": "HIGH",
+      "justification": "The policy requires every privileged account to be enrolled in multi-factor authentication and requires any account that cannot be enrolled to sit on an exception register with a named approver and an expiry date. Four of the twenty-three accounts in the privileged account listing show MFA_Status = Not Enrolled, and no exception register was supplied, so none of the four is evidenced as approved. The control operated for the majority of the population but not for all of it, which is a deficiency in operation rather than a wholesale failure of design.",
+      "evidence_pointers": [
+        "CS001_Privileged_Account_Listing.csv rows 10, 11, 13 and 20: MFA_Status = Not Enrolled (svc-backup-014, svc-scada-hist-02, vpn.legacy.maint, brk.glass.001)",
+        "CS001_Remote_Access_Authentication_Policy.md section 2 and section 3: the enrolment requirement and the exception-register requirement",
+        "No exception register is present in the engagement, so the four accounts cannot be evidenced as approved exceptions"
+      ]
+    },
+    {
+      "control_ref": "CONTROL-002",
+      "expected_status": "POTENTIAL_DEFICIENCY",
+      "expected_risk": "MEDIUM",
+      "justification": "The standard sets an explicit 90-day inactivity threshold and a 30-day never-authenticated threshold, so the population is testable. Against an export date of 30 June 2024, two enabled accounts last authenticated more than 90 days earlier (vpn.legacy.maint on 16 January 2024 and brk.glass.001 on 8 March 2024) and one enabled account created on 5 January 2024 has never authenticated. No dormant-account exception register was supplied. Three exceptions in a population of twenty-three is a deficiency in operation.",
+      "evidence_pointers": [
+        "CS001_Access_Management_Standard.md section 1: the 90-day and 30-day thresholds",
+        "CS001_Privileged_Account_Listing.csv row 13: vpn.legacy.maint, Account_Status = Enabled, Last_Login = 2024-01-16",
+        "CS001_Privileged_Account_Listing.csv row 20: brk.glass.001, Account_Status = Enabled, Last_Login = 2024-03-08",
+        "CS001_Privileged_Account_Listing.csv row 24: adm.a.kowalski, Account_Status = Enabled, Last_Login = Never, Created_Date = 2024-01-05"
+      ]
+    },
+    {
+      "control_ref": "CONTROL-012",
+      "expected_status": "NOT_EFFECTIVE",
+      "expected_risk": "HIGH",
+      "justification": "The standard requires every alert to be given a named reviewer and a terminal status, requires high severity alerts to be reviewed within one business day, and forbids any alert raised more than 30 days before the export date from remaining open. Six of the fourteen alerts in the export are still Open with no reviewer and no review date, five of the six are High severity, and five were raised more than 30 days before the export date - the oldest in January, unreviewed for over five months. Two of the unreviewed alerts are the out-of-hours logon and the privileged group membership change raised on the same day by the account that the other findings identify as unenrolled and dormant. A detection control whose alerts are not read provides no detection, so this is a failure of operation rather than a partial one.",
+      "evidence_pointers": [
+        "CS001_Access_Management_Standard.md section 3: the review timescales and the 30-day rule",
+        "CS001_Privileged_Alert_Review_Export.csv rows 2, 3, 5, 7, 9 and 12: Alert_Status = Open, Reviewer = NOT SET, Review_Date = NOT SET",
+        "CS001_Privileged_Alert_Review_Export.csv rows 2 and 3: both raised on 2024-01-16 against Source_Account = vpn.legacy.maint"
+      ]
+    },
+    {
+      "control_ref": "CONTROL-013",
+      "expected_status": "NOT_EFFECTIVE",
+      "expected_risk": "HIGH",
+      "justification": "The control requires individually named vendor accounts, multi-factor authentication without exception, a set expiry date no more than 90 days beyond the export date, and an access request reference. The register breaches each of those requirements at once: two accounts are generic support credentials rather than named individuals, three active accounts are not enrolled in multi-factor authentication, two have no expiry date and no access request reference at all, one carries an expiry date two and a half years beyond the export date, and one has no contract reference. The control did not operate as designed for a substantial part of the population, and the shared credentials additionally mean vendor activity during the period cannot be attributed to an individual.",
+      "evidence_pointers": [
+        "CS001_Third_Party_Remote_Access_Accounts.csv rows 4 and 8: vnd.halloway.support and vnd.orrin.maint, generic accounts with MFA_Status = Not Enrolled, Account_Expiry_Date = NOT SET and Access_Request_Ref = NOT SET",
+        "CS001_Third_Party_Remote_Access_Accounts.csv row 8: Contract_Ref = NOT SET",
+        "CS001_Third_Party_Remote_Access_Accounts.csv row 10: Account_Expiry_Date = 2026-12-31, far beyond the 90-day limit",
+        "CS001_Third_Party_Remote_Access_Accounts.csv row 11: MFA_Status = Not Enrolled on an active named vendor account",
+        "CS001_Remote_Access_Authentication_Policy.md section 4 and CS001_Access_Management_Standard.md section 2"
+      ]
+    }
+  ],
+  "limitations": [
+    "The expected outcomes above are the case author's reasoned judgement about what an auditor should conclude from this evidence. They are documentation of intent, not a validated answer key, and this case study is deliberately not part of the evaluation suite in app.evaluation.datasets: no accuracy, precision or recall figure reported by this project is computed over it.",
+    "The planted conditions are unambiguous by construction - one attribute, one threshold, one clean set of exceptions per control. Real audit evidence is contradictory, partial and undated, and a good result here says nothing about that harder case.",
+    "The reconstruction covers the evidence an auditor would test. It does not reconstruct the intrusion itself, and nothing here should be read as a technical account of how any particular attack was carried out.",
+    "Observed when this case study was built, and recorded rather than tuned away: with the offline mock provider the system reaches the expected conclusion on CONTROL-001 and reports a deficiency on CONTROL-012, but answers INSUFFICIENT_EVIDENCE on CONTROL-002 and CONTROL-013. Its sufficiency pre-check is right that this engagement supplies no dormant-account report, no remediation export, no exception register, no vendor access-request tickets and no remote session log, all of which those controls name as expected evidence. The divergence is therefore a disagreement about how much of the expected evidence set must be present before a deficiency may be asserted, not a retrieval failure - retrieval surfaced the correct files in both cases. The expected outcomes above were deliberately not rewritten to match what the tool produced; doing so would make this a test the system had been taught to pass."
+  ]
+}

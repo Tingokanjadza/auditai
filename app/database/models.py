@@ -36,6 +36,7 @@ from app.database.base import Base, utcnow
 from app.schemas.enums import (
     AssessmentStatus,
     ConfidenceLevel,
+    EvidenceProvenance,
     EvidenceSufficiency,
     EvidenceType,
     ExperimentMode,
@@ -158,6 +159,26 @@ class EvidenceFile(TimestampMixin, Base):
     #: SHA-256 of the stored bytes - the integrity anchor for the evidence trail.
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
     evidence_type: Mapped[str] = mapped_column(String(48), nullable=False, default=EvidenceType.OTHER.value)
+    #: Deliberately a second, separate column rather than another ``evidence_type`` value:
+    #: the type says what the artefact *is* (a policy, a user listing), the provenance says
+    #: where it *came from* and therefore how far it may be trusted. They are independent -
+    #: a privileged account listing reconstructed from public reporting and one exported
+    #: from a client's directory are the same type and are not the same evidence - so
+    #: folding provenance into the type vocabulary would make the pair unrepresentable and
+    #: force every consumer to guess. ``server_default`` is set as well as ``default`` so
+    #: that rows written outside the ORM, and rows that already existed when this column was
+    #: added, land on the safest value rather than on NULL. The index supports the "show me
+    #: everything that is not synthetic" query the evidence list needs; note that
+    #: ``app.database.migrations`` restores the column but not the index on a database that
+    #: predates it, which costs a scan and never costs correctness, and which
+    #: ``tests/test_migrations.py`` pins so the boundary stays documented.
+    provenance: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=EvidenceProvenance.SYNTHETIC.value,
+        server_default=EvidenceProvenance.SYNTHETIC.value,
+        index=True,
+    )
     description: Mapped[Optional[str]] = mapped_column(Text)
     uploaded_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

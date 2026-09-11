@@ -5,7 +5,7 @@ The app is thin by construction. Every route delegates to :mod:`app.audit.servic
 :mod:`app.evaluation`, which are the same modules the Streamlit interface calls
 in-process. Nothing an auditor can do through the API is implemented twice.
 
-Three application-level decisions live here rather than in the routers:
+Four application-level decisions live here rather than in the routers:
 
 * **One error shape.** ``NotFoundError``, ``InvalidInputError`` and the evidence
   ingestion errors are translated to status codes once, at the bottom of this module, so
@@ -16,6 +16,11 @@ Three application-level decisions live here rather than in the routers:
 * **No authentication.** Stated in the OpenAPI description, in ``/health`` and in the
   settings payload, because a reader who only sees the interactive docs must not be left
   to discover it.
+* **CORS and public URLs come from configuration, never from code.** A hostname compiled
+  into the middleware makes the API unusable from any deployed front end, so the browser
+  policy is derived from ``cors_allow_origins`` / ``cors_restrict_to_configured`` /
+  ``public_app_url`` by :func:`cors_policy`, which is a pure function so the effective
+  policy can be inspected and tested without starting a server.
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.routers import assessments, controls, dashboard, evaluation, evidence, projects, reports, reviews
 from app.api.routers import settings as settings_router
 from app.audit.service import InvalidInputError, NotFoundError, ServiceError
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.database.base import get_db, init_db, session_scope
 from app.evidence.service import EvidenceIngestError, EvidenceTooLargeError
 from app.llm.factory import provider_health
@@ -52,8 +57,14 @@ API_V1_PREFIX = "/api/v1"
 #: audit evidence and has no authentication must say so where its users actually look.
 SECURITY_WARNING = (
     "**No authentication.** This research prototype has no login, no authorisation and no "
-    "rate limiting. Every endpoint is open to anyone who can reach the port. Bind it to "
-    "localhost, use synthetic data only, and do not deploy it on a shared or public network."
+    "rate limiting. Every endpoint is open to anyone who can reach the port, including the "
+    "ones that upload evidence, read it back and delete it. Bind it to localhost, use "
+    "synthetic data only, and do not deploy it on a shared or public network. "
+    "If you do expose it - to a marker, a supervisor or a demo audience - put an "
+    "authenticating proxy or a private network in front of it, set "
+    "CORS_RESTRICT_TO_CONFIGURED=true with an explicit CORS_ALLOW_ORIGINS list, and treat "
+    "everything you load into it as public. CORS constrains browsers, not attackers: it is "
+    "not an access control and must never be mistaken for one."
 )
 
 DESCRIPTION = """
@@ -164,6 +175,144 @@ TAGS_METADATA: List[Dict[str, Any]] = [
 ]
 
 
+# ---- browser and deployment policy
+#: Loopback on any port. A regex rather than a list because a developer's port is not
+#: predictable: Streamlit walks 8501, 8502, … when a port is taken, and notebooks pick
+#: their own. It matches loopback names only, so no internet-hosted page can ever satisfy
+#: it - which is what makes trusting it in development defensible.
+LOCALHOST_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+
+def _normalise_origin(raw: str) -> str:
+    """Trim an origin to the exact form a browser puts in the ``Origin`` header.
+
+    Browsers send scheme://host[:port] with no trailing slash, and Starlette compares the
+    header to the configured list as a literal string. A ``.env`` written as
+    ``https://example.edu/`` would therefore never match anything, and the failure is
+    invisible - the request is simply refused. Stripping the slash here turns that class
+    of misconfiguration into a non-event.
+    """
+    return (raw or "").strip().rstrip("/")
+
+
+def _parse_origin_list(raw: str) -> List[str]:
+    """Split the comma-separated ``CORS_ALLOW_ORIGINS`` value, preserving order."""
+    origins: List[str] = []
+    for candidate in (raw or "").split(","):
+        origin = _normalise_origin(candidate)
+        if origin and origin not in origins:
+            origins.append(origin)
+    return origins
+
+
+def cors_policy(settings: Optional[Settings] = None) -> Dict[str, Any]:
+    """Resolve the CORS middleware arguments from configuration.
+
+    A pure function, separate from :func:`create_app`, because the browser policy of a
+    deployed service is exactly the kind of thing that should be assertable in a test and
+    printable in a log rather than inferred from a running process.
+
+    The two modes:
+
+    * **Development** (``cors_restrict_to_configured`` false) - loopback on any port is
+      trusted via :data:`LOCALHOST_ORIGIN_REGEX`, plus any explicitly configured origin.
+      Blocking the researcher's own browser would be theatre while the API is
+      unauthenticated anyway.
+    * **Production** (``cors_restrict_to_configured`` true) - only the configured origins
+      and ``public_app_url``. Loopback is no longer trusted, because on a deployed host
+      "localhost" is the server's own loopback and means nothing about who is calling.
+
+    When production mode is selected and nothing is configured, the policy allows *no*
+    origin and says so loudly. Falling back to ``"*"`` would be the opposite of what the
+    operator asked for, and silently widening a policy someone deliberately narrowed is
+    how a deployment ends up publicly callable while its configuration claims otherwise.
+
+    ``allow_credentials`` is always ``False``: this API has no cookies, no sessions and no
+    ``Authorization`` header to protect, and ``allow_origins=["*"]`` together with
+    ``allow_credentials=True`` is rejected outright by every browser - a combination that
+    reads as permissive but in practice blocks every credentialed request.
+    """
+    resolved = settings if settings is not None else get_settings()
+
+    configured = _parse_origin_list(getattr(resolved, "cors_allow_origins", "") or "")
+    public_app_url = _normalise_origin(getattr(resolved, "public_app_url", "") or "")
+    if public_app_url and public_app_url not in configured:
+        configured.append(public_app_url)
+
+    restrict = bool(getattr(resolved, "cors_restrict_to_configured", False))
+    wildcard = "*" in configured
+
+    policy: Dict[str, Any] = {
+        "allow_origins": configured,
+        "allow_credentials": False,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+    if not restrict:
+        policy["allow_origin_regex"] = LOCALHOST_ORIGIN_REGEX
+
+    if restrict and not configured:
+        logger.warning(
+            "CORS_RESTRICT_TO_CONFIGURED is on but no origin is configured: every "
+            "cross-origin browser request will be refused, including the deployed UI. "
+            "Set CORS_ALLOW_ORIGINS (comma-separated) or PUBLIC_APP_URL."
+        )
+    elif wildcard:
+        # Honoured rather than silently rewritten - an operator who typed "*" meant it -
+        # but it is worth one line in the log, and credentials stay off regardless.
+        logger.warning(
+            "CORS_ALLOW_ORIGINS contains '*': every website a user visits may call this "
+            "unauthenticated API from their browser. Name the origins instead."
+        )
+
+    return policy
+
+
+def openapi_servers(settings: Optional[Settings] = None) -> List[Dict[str, str]]:
+    """The ``servers`` block for the OpenAPI document, or an empty list locally.
+
+    Only populated when a deployment sets ``public_api_url``: a document with no
+    ``servers`` resolves paths against whatever host served it, which is exactly right for
+    ``localhost`` and for the test client, and stating a wrong absolute URL there would
+    break "Try it out" in the interactive docs.
+
+    ``public_app_url`` deliberately does *not* appear here. The Streamlit console is not
+    an API server, and listing it would leave a reader of ``/docs`` firing requests at a
+    host that serves none of these paths; it is surfaced in the description and at ``/``
+    instead, where it means "the human interface for this deployment lives here".
+    """
+    resolved = settings if settings is not None else get_settings()
+    public_api_url = _normalise_origin(getattr(resolved, "public_api_url", "") or "")
+    if not public_api_url:
+        return []
+
+    servers = [{"url": public_api_url, "description": "Deployed API"}]
+    local = _normalise_origin(getattr(resolved, "api_base_url", "") or "")
+    if local and local != public_api_url:
+        servers.append({"url": local, "description": "Local development"})
+    return servers
+
+
+def _deployment_note(settings: Optional[Settings] = None) -> str:
+    """A paragraph naming this deployment's public URLs, or "" when it is purely local."""
+    resolved = settings if settings is not None else get_settings()
+    api_url = _normalise_origin(getattr(resolved, "public_api_url", "") or "")
+    app_url = _normalise_origin(getattr(resolved, "public_app_url", "") or "")
+    if not api_url and not app_url:
+        return ""
+
+    lines = ["\n### This deployment\n"]
+    if api_url:
+        lines.append("* API base URL: `{0}`".format(api_url))
+    if app_url:
+        lines.append("* Audit console (Streamlit): `{0}`".format(app_url))
+    lines.append(
+        "* Browser access to this API is limited to the configured CORS origins; see "
+        "`CORS_ALLOW_ORIGINS` and `CORS_RESTRICT_TO_CONFIGURED`."
+    )
+    return "\n".join(lines) + "\n"
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Create the schema and seed the control library before the first request.
@@ -199,11 +348,14 @@ def create_app() -> FastAPI:
     """Build the application. A function so tests can construct a fresh instance."""
     settings = get_settings()
 
+    servers = openapi_servers(settings)
+
     app = FastAPI(
         title=settings.app_name,
-        description=DESCRIPTION,
+        description=DESCRIPTION + _deployment_note(settings),
         version=settings.app_version,
         openapi_tags=TAGS_METADATA,
+        servers=servers or None,
         lifespan=lifespan,
         contact={"name": "Research prototype - synthetic data only"},
         license_info={"name": "Academic research prototype"},
@@ -214,17 +366,15 @@ def create_app() -> FastAPI:
         },
     )
 
-    # CORS is permissive for local development only: the Streamlit UI, the interactive
-    # docs and any notebook all run on some other localhost port, and blocking them would
-    # only be theatre while the API itself is unauthenticated. The regex still refuses
-    # every non-loopback origin, so a page on the internet cannot drive this API through a
-    # researcher's browser. Credentials are off because the API has no cookies or sessions.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
+    # Which browsers may call this API is a deployment decision, so it is read from
+    # configuration rather than compiled in; cors_policy() documents the two modes.
+    policy = cors_policy(settings)
+    app.add_middleware(CORSMiddleware, **policy)
+    logger.info(
+        "CORS: mode=%s origins=%s loopback=%s",
+        "restricted" if settings.cors_restrict_to_configured else "development",
+        policy["allow_origins"] or "(none)",
+        "allowed" if "allow_origin_regex" in policy else "not trusted",
     )
 
     _register_routers(app)
@@ -282,6 +432,7 @@ def _register_system_routes(app: FastAPI) -> None:
     )
     def index() -> Dict[str, Any]:
         settings = get_settings()
+        policy = cors_policy(settings)
         return {
             "name": settings.app_name,
             "version": settings.app_version,
@@ -290,6 +441,16 @@ def _register_system_routes(app: FastAPI) -> None:
             "openapi": "/openapi.json",
             "health": "/health",
             "authentication": "none",
+            # Public URLs and the browser policy are published because they are how a
+            # reader confirms which deployment they reached and why their front end is
+            # or is not allowed to call it. None of these values is a secret.
+            "public_api_url": settings.public_api_url or "",
+            "console_url": settings.public_app_url or "",
+            "cors": {
+                "mode": "restricted" if settings.cors_restrict_to_configured else "development",
+                "allowed_origins": policy["allow_origins"],
+                "loopback_allowed": "allow_origin_regex" in policy,
+            },
             "warning": SECURITY_WARNING.replace("**", ""),
         }
 
@@ -388,4 +549,15 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 app = create_app()
 
-__all__ = ["API_V1_PREFIX", "DESCRIPTION", "SECURITY_WARNING", "TAGS_METADATA", "app", "create_app", "lifespan"]
+__all__ = [
+    "API_V1_PREFIX",
+    "DESCRIPTION",
+    "LOCALHOST_ORIGIN_REGEX",
+    "SECURITY_WARNING",
+    "TAGS_METADATA",
+    "app",
+    "cors_policy",
+    "create_app",
+    "lifespan",
+    "openapi_servers",
+]
