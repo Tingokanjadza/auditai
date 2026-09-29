@@ -195,13 +195,15 @@ maintain. The console runs the service layer in-process — exactly the configur
    need it rather than "anyone with the link". **This is the only real access control available on
    any deployment path in this document** — the application itself has none.
 
-6. **Open the app and check the sidebar.** The provider badge must say what you expect. `AI
-   Provider: Mock` means the deterministic rule engine answered; a red mismatch badge means a real
-   provider was configured but could not be constructed (usually a missing key) and the mock
-   answered instead. Results from a mock run measure the pipeline, not a model.
+6. **Open the app and check the sidebar.** The provider badge must say what you expect. **DEMO
+   MODE** means the offline rule engine answered; a red "Claude was configured but Demo mode
+   answered" state means a real provider was configured but could not be constructed (usually a
+   missing key) and the rule engine answered instead. Results from Demo mode measure the pipeline,
+   not a model.
 
-7. **Load the demo data.** Dashboard → **Load demo project + synthetic evidence**. That gives a
-   visitor something to look at without uploading anything.
+7. **Load the demo data.** Home → **Try the demo audit**. That loads nine synthetic files into the
+   demo audit and lands on Assessments, so a visitor has something to look at without uploading
+   anything. Press **Run assessment** to produce the five proposals; nothing runs on its own.
 
 ### What you are giving up
 
