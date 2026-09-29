@@ -571,15 +571,27 @@ input::placeholder, textarea::placeholder {{ color: {text_faint} !important; }}
     padding: 0.14em 0.55em;
     border-radius: 4px;
     border: 1px solid transparent;
-    font-size: 0.72rem;
+    font-size: 0.74rem;
     font-weight: 600;
-    letter-spacing: 0.045em;
-    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    /* Badges carry plain-language labels ("Potential deficiency"), so they are not
+       shouted in capitals; the raw token stays in the tooltip. */
+    text-transform: none;
     line-height: 1.5;
     white-space: nowrap;
     vertical-align: middle;
 }}
 .ia-badge.ia-plain {{ color: {text_muted}; background: {surface_alt}; border-color: {border}; }}
+mark.ia-mark {{
+    background: {ai_tint}; color: {text}; border-bottom: 2px solid {ai};
+    padding: 0 0.1em; border-radius: 2px;
+}}
+.ia-next-step {{ color: {accent}; font-size: 0.74rem; margin: 0.2rem 0 0.35rem 0; }}
+.ia-text {{ color: {text}; font-size: 0.88rem; line-height: 1.55; margin: 0.15rem 0 0.5rem 0; white-space: pre-wrap; }}
+.ia-text.ia-text-muted {{ color: {text_muted}; }}
+.ia-list {{ margin: 0.2rem 0 0.5rem 0; padding-left: 1.15rem; }}
+.ia-list li {{ color: {text}; font-size: 0.86rem; line-height: 1.55; margin-bottom: 0.3rem; }}
+.ia-list.ia-list-muted li {{ color: {text_muted}; }}
 .ia-badge .ia-badge-sub {{ opacity: 0.78; font-weight: 500; letter-spacing: 0.02em; }}
 .ia-badge-row {{ display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin: 0.15rem 0 0.5rem 0; }}
 

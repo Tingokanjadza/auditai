@@ -1,530 +1,260 @@
 # Quickstart
 
-From a fresh clone to a completed control assessment, a recorded human review and a generated
-audit report — offline, with no API key.
-
-Every command and every quoted output below was executed against a clean copy of this repository
-(CPython 3.9.6, macOS arm64, `LLM_PROVIDER=mock`). Where the output on your machine will
-legitimately differ — timings, hashes, timestamps, ports — that is said.
-
-**Total time: about five minutes, most of it the one-off `pip install`.**
+From a fresh clone to a generated audit report in the browser, offline, with no API key. One
+path, in order. Every button and field is quoted exactly as the console shows it.
 
 > All evidence in this walkthrough is synthetic and describes no real organisation, system or
-> person. Do not substitute real audit evidence: this prototype has no authentication, no access
-> control and no encryption at rest.
+> person. Do not substitute real audit evidence: this prototype has **no authentication, no
+> access control and no encryption at rest**.
 
 ---
 
 ## 0. Prerequisites
 
-* **Python 3.9** (developed and verified on 3.9.6). Check with `python3 --version`.
-* About 400 MB of disk for the virtual environment.
+* **Python 3.9 to 3.12.** Check with `python3 --version`. Python 3.13 is not supported: the
+  pinned `numpy==2.0.2` has no wheels for it. The code is written to 3.9 syntax.
+* Roughly 400 MB of disk for the virtual environment.
 * No API key. No network access after the install step.
+
+All commands are run from the repository root:
 
 ```bash
 cd "/path/to/IT AUDIT TOOL"
 ```
 
-All commands below are run from the repository root.
-
 ---
 
-## 1. Install the dependencies
+## 1. Install
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-**What you should see** — a long `Collecting …` list ending in:
-
-```
-Successfully installed ... fastapi-0.128.8 ... numpy-2.0.2 ... pandas-2.3.3 ...
-pydantic-2.13.5 ... scikit-learn-1.6.1 ... SQLAlchemy-2.0.52 ... streamlit-1.50.0 ...
-```
-
-*Measured: 52 s with a warm pip cache; first-ever install is longer because the wheels are
-downloaded.* Every dependency is pinned in `requirements.txt`.
-
-> Use `.venv/bin/python` explicitly for every command below (or activate the environment with
-> `source .venv/bin/activate`). `run.py` also prefers `.venv/bin/python` internally when it spawns
-> the server processes, so the two subcommands that start servers work either way.
+Every dependency is pinned in `requirements.txt` (the one exception, `anthropic`, is a floor
+rather than a pin; [`SETUP.md`](SETUP.md) says why). Use `.venv/bin/python` for every command
+below, or `source .venv/bin/activate` first. `run.py` prefers `.venv/bin/python` when it spawns
+the server, so `python run.py` works either way once the environment exists.
 
 ---
 
-## 2. Create the database and seed the control library
+## 2. Start the console
 
 ```bash
-.venv/bin/python run.py init
+.venv/bin/python run.py
 ```
 
-**What you should see:**
+`python run.py` with no argument starts the audit console (the same as `run.py ui`), bound to
+`127.0.0.1`, and opens your browser a moment later. The terminal prints:
 
 ```
 ==============================================================================
-  Initialising database
+  AuditAI console
 ==============================================================================
-Database ready. Control library contains 14 controls.
+  Console : http://127.0.0.1:8501
+  Demo mode - offline rule-based assistant, no API key needed
+  First time? Press 'Try the demo audit' on the home page.
+  Press Ctrl-C to stop.
 ```
 
-*Measured: 0.8 s.*
+If the browser does not open, go to <http://127.0.0.1:8501> yourself. Set `NO_BROWSER=1` to
+stop the launcher opening one; set `STREAMLIT_PORT` in `.env` if 8501 is taken (the launcher
+refuses to start on a busy port and says so).
 
-This creates `data/audit.db` (SQLite, 12 tables) and loads the synthetic control library from
-`data/controls/control_library.json`. It is **idempotent** — controls are upserted on their
-business key, so running it again changes nothing.
+There is nothing to initialise first. The console creates the database and seeds the control
+library itself on its first run, so `run.py init` is optional.
 
-Nothing here reaches the network. If you want to confirm the configuration first:
+**What you should see.** The **AuditAI** brand in the sidebar and, on the page, a greeting
+(*Good morning, Auditor*) above two boxes: **Start an audit** and **Try the demo audit**. In
+the sidebar:
 
-```bash
-.venv/bin/python -c "from app.config import get_settings; print(get_settings().provider_summary())"
-```
+* **Current audit** — reads *No audit project yet* until one exists, with a link *Start an
+  audit or try the demo*.
+* **Your name** — with the note *Enter your name before recording a review*.
+* A **DEMO MODE** badge with the line *Offline rule-based assistant - not an AI language
+  model. Results measure the workflow, not model quality.*, and an **AI provider settings**
+  link.
+* The footer: *AI assists, the auditor decides.*
 
-which prints `'llm_provider': 'mock'`, `'llm_api_key': '(not set)'`,
-`'embedding_model': 'hashing-vectorizer'`.
+Below the two boxes the page shows **Your audit overview** (Active audits / Awaiting review),
+then, once an audit exists, the five-step strip — **1 Controls** *Choose the controls*,
+**2 Evidence** *Add evidence*, **3 Assess** *Run the AI assessment*, **4 Review** *Record your
+decisions*, **5 Report** *Generate the report* — then **What do you need to do?**, **Requires
+your attention** and a collapsed **Figures and activity for this audit** expander.
+
+**Type your name into "Your name" now.** Every decision you record is attributed to it, and the
+**Record decision** button stays disabled until a name is present.
 
 ---
 
-## 3. Start the audit console
+## 3. Load the demo audit
 
-```bash
-.venv/bin/python run.py ui
-```
+Press **Try the demo audit**.
 
-**What you should see:**
+A status box reads *Loading the demo audit...* and lists each file as it is generated and
+indexed, then *Demo audit ready: 9 file(s) loaded*. The console switches the sidebar to
+**Privileged Access Management Audit (demo)** and lands on **Assessments** with the message
+*Demo audit ready: 9 files loaded. Next: press Run assessment.*
 
-```
-==============================================================================
-  Streamlit interface -> http://localhost:8501
-==============================================================================
+The demo audit puts five controls in scope (CONTROL-001 to CONTROL-005) and ingests nine
+synthetic files:
 
-  You can now view your Streamlit app in your browser.
-
-  Local URL: http://localhost:8501
-```
-
-> **First-run only.** The very first `streamlit run` on a machine prints a welcome message and
-> asks for an email address before it starts:
->
-> ```
->       👋 Welcome to Streamlit!
->       ...
->       Email:
-> ```
->
-> **Press Enter** to skip it. Streamlit writes `~/.streamlit/credentials.toml` and never asks
-> again. If you are launching from a script with no terminal attached, the process will exit at
-> this prompt — create that file first, or start Streamlit with `--server.headless true`.
-
-Open <http://localhost:8501>. You should get a dark audit console with a sidebar
-(Overview / Engagement / Assessment / Research), a **MOCK PROVIDER** badge reading
-*"Deterministic rule-based stand-in, not a language model"*, and, across the top:
-
-> Every assessment in this application is AI-generated and requires auditor review. Nothing here
-> is assurance or a statement of compliance.
-
-Because the database is empty, the Dashboard shows a call to action:
-
-> **Nothing to audit yet** — The demo engagement scopes five synthetic IT controls and ingests
-> generated policy documents, configuration exports and user listings.
-
-*(To use a different port: `STREAMLIT_PORT=8899 .venv/bin/python run.py ui`.)*
-
----
-
-## 4. Load the demonstration evidence
-
-Click **“Load demo project + synthetic evidence”**.
-
-**What you should see** after it finishes:
-
-```
-Demo project ready: Privileged Access Management Audit. 9 file(s) ingested, 0 already present.
-```
-
-*Measured: about 40 s the first time.* Most of that is generating the evidence files, not
-ingesting them; the generation is seeded, so a second run produces byte-identical files and
-completes in a couple of seconds. The button is safe to press twice — a file already present under
-the same name is skipped.
-
-The **Evidence** page now lists nine files across five formats, all `PARSED` (36 chunks in total):
-
-| File | Type | Chunks |
-|---|---|---|
-| `Multi_Factor_Authentication_Policy_v3.docx` | POLICY | 5 |
-| `Privileged_Accounts_MFA_Export_2024-06-30.csv` | USER_LISTING | 5 |
-| `Patch_Management_Standard_v2.pdf` | STANDARD | 2 |
-| `Endpoint_Patch_Compliance_Export_2024-06-30.xlsx` | SYSTEM_REPORT | 5 |
-| `Password_Policy_v4.txt` | POLICY | 6 |
-| `Domain_Password_Settings_Export_2024-06-30.csv` | CONFIGURATION_EXPORT | 2 |
-| `Screenshot_Narrative_Domain_Password_Settings.txt` | SCREENSHOT_NARRATIVE | 1 |
-| `Change_Management_Policy_v5.docx` | POLICY | 5 |
-| `Change_Tickets_Export_2024Q2.xlsx` | TICKET_EXPORT | 5 |
-
-Each file carries a SHA-256 taken at upload (yours will match these, since the generator is
-deterministic) and each chunk carries a source locator such as
-`section '4. Evidence of operation' - paragraph 14` or
-`rows 2-101 - columns: Account_Name, Account_Type, …`. Expand a file and open the chunk browser to
-see the text a model will actually be shown.
-
----
-
-## 5. Run the assessments
-
-Go to **Assessments**. The panel is pre-filled with all five scoped controls and
-**Experiment C — LLM + RAG + structured workflow + human review**. Click
-**“Run assessment (5 control(s))”**.
-
-*Measured: under 5 seconds for all five controls against the offline provider.*
-
-**What you should see** — five results, statuses and risk bands exactly as below (the offline
-provider is deterministic, so these reproduce):
-
-| Control | | AI status | Risk |
-|---|---|---|---|
-| CONTROL-001 | Multi-Factor Authentication for Privileged Accounts | `POTENTIAL_DEFICIENCY` | CRITICAL (79.75) |
-| CONTROL-002 | Dormant Account Management | `INSUFFICIENT_EVIDENCE` | HIGH (54.75) |
-| CONTROL-003 | Security Patch Management | `POTENTIAL_DEFICIENCY` | HIGH |
-| CONTROL-004 | Change Management Approval | `POTENTIAL_DEFICIENCY` | HIGH |
-| CONTROL-005 | Password Policy Enforcement | `NOT_EFFECTIVE` | CRITICAL (82.12) |
-
-Two of these are worth pausing on.
-
-**CONTROL-002 came back `INSUFFICIENT_EVIDENCE`, and that is the correct answer.** The demo
-engagement contains no dormant-account report. The system does not treat that silence as a
-failure; it says the control could neither be confirmed nor challenged and names what it would
-need. Insufficient evidence is counted separately from deficiencies in every figure this console
-shows.
-
-**CONTROL-005 came back `NOT_EFFECTIVE`, not `POTENTIAL_DEFICIENCY`**, because the configuration
-export contradicts the policy outright: `Minimum_Password_Length = 8` against a documented
-requirement of 14.
-
-Open any result (**“Open an assessment”**) to see the four-column panel the whole design rests on:
-
-```
-THE CONTROL REQUIRES   |  THE EVIDENCE PROVES   |  THE AI INFERS  |  A HUMAN MUST VERIFY
-(control library)      |  (verbatim + verified) |  (labelled)     |  (open questions)
-```
-
-For CONTROL-001 the middle column carries two citations, both `VERIFIED` at match score 1.00:
-
-```
-Multi_Factor_Authentication_Policy_v3.docx - section '4. Evidence of operation' - paragraph 14
-  "The privileged account listing produced for audit must report the multi-factor
-   authentication enrolment status of every account in the population."
-
-Privileged_Accounts_MFA_Export_2024-06-30.csv - 'Population summary' - rows 2-101
-  "MFA_Status: Enabled = 90 (90.0%) | Disabled = 10 (10.0%)"
-
-2 of 2 citations verified against their chunk, 0 partial, 0 fabricated.
-```
-
-and the fourth column already contains the auditor's work list — *"Inspect each exception record
-in the source system and confirm it is a genuine exception rather than an export artefact"*,
-*"Establish whether any exception is covered by a documented and approved exemption"* — together
-with the corroborating evidence that was never supplied (the MFA enforcement rule export, the
-exception register, the authentication log extract).
-
-Expand **Safety rails applied** at the top of the panel. On a clean run it reads:
-
-```
-human_review_enforced: every assessment produced by this system requires auditor review
-before it can be relied upon.
-```
-
----
-
-## 6. Record the human review
-
-Nothing above is an audit conclusion yet. Go to **Human Review** — the queue shows
-**AWAITING REVIEW 5**.
-
-1. Pick an assessment from **“Assessment to review”** (it opens with the most severe).
-2. Read the four-column panel and the citations. This is the point of the exercise: the panel is
-   laid out so you check the model's quotations against the evidence, not its prose against your
-   intuition.
-3. Choose a decision — **Accept finding** / Modify finding / Reject finding / Request more
-   evidence. **Final status** and **Final risk level** are pre-filled with the AI's proposal;
-   change them if you disagree.
-4. Type a comment, e.g. *"Quotations checked back to the configuration export; the configured
-   value of 8 is below the policy value of 14."*
-5. Click **Record decision**.
-
-**What you should see:** the queue drops to **AWAITING REVIEW 4**, **REVIEWS COMPLETED 1**, and
-**STATUS AGREEMENT 100%** (`n = 1`). The decision is stored in a separate `human_reviews` row —
-the AI's assessment is never overwritten — and the system computes `agreed_with_ai_status` and
-`agreed_with_ai_risk` for you, so agreement is a measured quantity rather than an impression.
-
-If you flag an output as a suspected fabrication, the form requires a note before it will submit.
-
----
-
-## 7. Generate the report
-
-Go to **Reports**, leave the format as **Markdown**, and click **Generate report**.
-
-**What you should see first** — a warning that is the system working correctly:
-
-> 4 of the assessed control(s) have no auditor decision. They will appear in the report as pending
-> review and will be excluded from every conclusive figure in it, which is the correct treatment —
-> not an omission.
-
-The report is written to `data/reports/` and shown in the page. The file from this walkthrough:
-
-```
-data/reports/audit_report_p1_privileged-access-management-audit_20260910T235654Z.md
-795 lines, 57 KB
-```
-
-**Check these four things, in this order** — they are the design claims made visible:
-
-1. **The executive summary counts only what an auditor concluded.**
-
-   ```
-   This project covers 5 control(s): 5 assessed by the system, 1 with an auditor's decision
-   recorded, 4 still PENDING AUDITOR REVIEW, and 0 not assessed at all.
-
-   Counting basis. Conclusive figures count only controls where an auditor has recorded a
-   decision other than PENDING. ...
-   ```
-
-   The four unreviewed controls are listed separately, with their AI status marked
-   *"(advisory)"*.
-
-2. **Section 4 prints the full SHA-256 of every evidence file**, its size, upload time and parse
-   status — and Section 10 states exactly what a hash does *not* establish.
-
-3. **Section 7 resolves every citation** back to filename, locator and verbatim quotation, with
-   its mechanical verification verdict beside it — including any that failed.
-
-4. **Section 10, Limitations, is part of the document**, not a footer. It states that the
-   assessments are machine-generated and advisory; that **they were not produced by a language
-   model at all** when the mock is in use; that evidence authenticity, population completeness and
-   period coverage cannot be established; that citation verification is textual, not semantic;
-   that no legal or regulatory opinion is expressed; and that the risk model is a prototype
-   research construct.
-
-Generate the HTML format too if you want the printable version. Reports are kept, so any figure
-quoted in a write-up can be traced back to the document it came from.
-
----
-
-## You are done
-
-You have run the full loop: **ingest → retrieve → assess → mechanically validate → risk-score →
-human review → report.** Stop the server with `Ctrl-C`.
-
----
-
-## Optional next steps
-
-### Run the research experiments
-
-```bash
-.venv/bin/python run.py evaluate
-```
-
-*Measured: 8.6 s for all three conditions over six datasets (18 assessments).* It creates an
-isolated project per dataset, ingests the generated files, assesses, scores against ground truth,
-and persists an `EvaluationRun` with its metrics.
-
-> **Two known defects in `run.py`**, both verified, both outside the evaluation code:
->
-> 1. The summary line it prints reads `accuracy=0.000 macro_f1=0.000` for every condition. It is
->    reading `metrics["accuracy"]`, but `compute_metrics` nests those figures under
->    `metrics["classification"]`. **The stored results are correct** — only the printed line is
->    wrong.
-> 2. `run.py evaluate` creates the schema but does not seed the control library. Against a
->    database that has never had `run.py init` run on it, every dataset errors with
->    *"Control 'CONTROL-001' not found"* and the run is recorded as failed. You did step 2, so you
->    are fine — but do not skip it.
->
-> Read the real figures on the **Evaluation** page, or with:
->
-> ```bash
-> .venv/bin/python -c "
-> from app.database.base import session_scope
-> from app.evaluation import runner
-> with session_scope() as s:
->     print(runner.compare_runs(s, [r.id for r in runner.list_runs(s)])
->           [['run_id','n','accuracy','macro_f1','grounding_rate']].to_string(index=False))
-> "
-> ```
-
-Expected (offline provider, `mock-rules-1.1`, seed 1337, n = 6; runs are listed newest first, so
-run 1 is condition A, run 2 is B and run 3 is C):
-
-```
- run_id  n  accuracy  macro_f1  grounding_rate
-      3  6  1.000000  1.000000             1.0     <- C, RAG + workflow
-      2  6  1.000000  1.000000             1.0     <- B, RAG
-      1  6  0.666667  0.464286             0.0     <- A, raw baseline
-```
-
-The **Evaluation** page renders the confusion matrices, per-class figures, the per-dataset
-prediction table and the A/B/C comparison, each printed next to its `n` and its automatic caveats.
-Read [`docs/EXAMPLE_RESULTS.md`](EXAMPLE_RESULTS.md) before quoting any of it — in particular, B =
-C here is a **null result** that reproduces, and 1.000 is six correct answers to six designed
-questions, not a claim that the pipeline is accurate.
-
-### See the anti-hallucination rails actually fire
-
-```bash
-MOCK_HALLUCINATION_RATE=1.0 .venv/bin/python run.py evaluate --modes C_RAG_WORKFLOW
-```
-
-The mock then deliberately fabricates a citation on every assessment. On DATASET-003 the validator
-catches it and the rails withdraw the conclusion:
-
-```
-predicted: INSUFFICIENT_EVIDENCE   (original model status: NOT_EFFECTIVE)
-citations: 2 total - 1 VERIFIED (1.00), 1 FABRICATED (0.09)
-rails_applied:
-  - critique_downgrade: ... the citation validator independently agreed the conclusion
-    was unsupported (1 citation(s) were fabricated).
-  - fabricated_citations: 1 citation(s) could not be resolved to the retrieved evidence
-    (position 2). They are retained and flagged, not removed.
-  - human_review_enforced: ...
-```
-
-### Start the REST API
-
-```bash
-.venv/bin/python run.py api          # then open http://localhost:8000/docs
-```
-
-Interactive OpenAPI docs, and `GET /health` reports the database and the resolved provider with
-the API key masked. `run.py all` starts the API and the UI together (verified: both answering in
-about 5 s).
-
-The Streamlit app talks to the service layer **in process** by default and needs no backend. To
-route it through HTTP instead, set `USE_API=true` (and `API_BASE_URL` if the port is not the
-default) before starting the UI.
-
-> The API has **no authentication, no authorisation and no rate limiting**. It says so in `GET /`,
-> in `GET /health` and in the OpenAPI description. Bind it to localhost.
-
-### Run the same loop with no browser
-
-Save this as `demo_run.py` **in the repository root** (Python puts the script's own directory on
-the import path, so it will not find `app` from elsewhere):
-
-```python
-"""End-to-end with no browser: ingest -> assess -> review -> report."""
-from app.database.base import init_db, session_scope
-from app.database.seed import bootstrap
-from app.evaluation.datasets import generate_dataset, get_dataset
-from app.evidence.service import ingest_file
-from app.audit.engine import AssessmentEngine
-from app.audit import report, service
-from app.schemas.enums import ExperimentMode, HumanDecision
-
-init_db()
-with session_scope() as session:
-    project_id = bootstrap(session)["demo_project_id"]
-
-    dataset = get_dataset("DATASET-001")
-    for path in generate_dataset("DATASET-001"):
-        ingest_file(
-            session, project_id, path.read_bytes(), path.name,
-            evidence_type=dataset.file(path.name).evidence_type,
-            uploaded_by="Research Auditor", is_synthetic=True,
-        )
-
-    result = AssessmentEngine(session).assess_control(
-        project_id, "CONTROL-001", mode=ExperimentMode.C_RAG_WORKFLOW
-    )
-    print("status   :", result.output.status.value)
-    print("risk     :", result.risk.level.value, round(result.risk.score, 2))
-    print("citations:", result.validation.verified, "verified /", result.validation.total)
-
-    review = service.record_human_review(
-        session, result.assessment_id, "Research Auditor", HumanDecision.ACCEPTED,
-        final_status=result.output.status.value,
-        final_risk_level=result.risk.level.value,
-        comments="Quotations traced back to the export; conclusion accepted.",
-    )
-    print("review   :", review.decision, "| agreed:", review.agreed_with_ai_status)
-
-    doc = report.generate_report(session, project_id, generated_by="Research Auditor")
-    print("report   :", doc.stored_path)
-```
-
-```bash
-.venv/bin/python demo_run.py
-```
-
-**Verified output:**
-
-```
-status   : POTENTIAL_DEFICIENCY
-risk     : CRITICAL 79.75
-citations: 5 verified / 5
-review   : ACCEPTED | agreed: True
-report   : .../data/reports/audit_report_p1_privileged-access-management-audit_...md
-```
-
-To keep it out of your main database, point it at a scratch one:
-
-```bash
-DATABASE_URL="sqlite:///$PWD/scratch.db" UPLOAD_DIR="$PWD/scratch/uploads" \
-REPORT_DIR="$PWD/scratch/reports" .venv/bin/python demo_run.py
-```
-
-*(Verified: the report is written to the overridden directory.)*
-
-### Run the test suite
-
-```bash
-.venv/bin/python -m pytest tests -q
-```
-
-**Verified:** `713 passed, 2 warnings in 57.90s`. The two warnings are Starlette deprecations for
-HTTP status-code constants, raised by a dependency and not by this project. The suite is hermetic:
-it redirects the database and every writable directory into a temporary tree before `app.config`
-is imported, and makes no network call — your `data/audit.db` is untouched.
-
-### Start over
-
-```bash
-.venv/bin/python run.py reset          # prompts: type 'yes' to confirm
-```
-
-Drops every table and re-seeds the control library. It does **not** delete files under
-`data/uploads/`, `data/reports/` or `data/synthetic/`; remove those by hand if you want a
-genuinely clean tree.
-
----
-
-## Troubleshooting
-
-| Symptom | Cause and fix |
+| File | Evidence type |
 |---|---|
-| Streamlit stops at `Email:` and never starts | First-ever Streamlit run on this machine. Press **Enter**. With no terminal attached the process exits — create `~/.streamlit/credentials.toml` containing `[general]` / `email = ""`, or pass `--server.headless true`. |
-| `ModuleNotFoundError: No module named 'app'` | You ran a script from outside the repository root. Put the script in the root, or run `python -m` from the root. |
-| `Address already in use` | Something else holds 8501/8000. Use `STREAMLIT_PORT=8899 .venv/bin/python run.py ui` or `API_PORT=8010 .venv/bin/python run.py api`. |
-| Dashboard is empty after loading the demo | Check the **Audit project** selector in the sidebar — it may be on a different engagement. After an evaluation run the selector also lists the `[EVALUATION] …` throwaway projects; pick *Privileged Access Management Audit*. |
-| `run.py evaluate` prints `accuracy=0.000` | Known `run.py` defect; the stored results are correct. See the box above. |
-| `SyntaxError` on startup | Wrong interpreter. This project targets Python 3.9; run everything through `.venv/bin/python`. |
-| Everything is slower than the timings here | The first demo load generates PDF/DOCX/XLSX files and the first Streamlit page paint compiles the theme. Subsequent runs are much faster. Timings here are from Apple Silicon with the offline provider; a hosted model turns seconds into minutes. |
+| `Multi_Factor_Authentication_Policy_v3.docx` | Policy |
+| `Privileged_Accounts_MFA_Export_2024-06-30.csv` | User listing |
+| `Patch_Management_Standard_v2.pdf` | Standard |
+| `Endpoint_Patch_Compliance_Export_2024-06-30.xlsx` | System report |
+| `Password_Policy_v4.txt` | Policy |
+| `Domain_Password_Settings_Export_2024-06-30.csv` | Configuration export |
+| `Screenshot_Narrative_Domain_Password_Settings.txt` | Screenshot narrative |
+| `Change_Management_Policy_v5.docx` | Policy |
+| `Change_Tickets_Export_2024Q2.xlsx` | Ticket export |
+
+The generator is seeded, so a second load produces the same bytes and skips files already
+present. Once loaded, the Home button reads **Open the demo audit** instead. The same loader is
+available from the terminal as `.venv/bin/python run.py seed-demo`.
+
+If you want to look at the files first, open **Evidence**: every file shows its parse status and
+the number of **Passages** — the pieces of text the AI can quote. Select a row and the
+**Passages** section shows exactly what is stored, with the locator a citation will point at.
 
 ---
 
-## Where to go next
+## 4. Run the assessment
 
+You are on **Assessments**. The run panel at the top reads *5 controls in scope · 0 assessed ·
+5 not yet assessed*.
+
+1. **Which controls** is set to **Not yet assessed** (the alternatives are **All in scope** and
+   **Choose...**). Leave it.
+2. Leave **Research options** collapsed. It holds the **Pipeline** choice, which defaults to
+   **Full audit workflow (recommended)**; the other two entries are the research baselines.
+3. Press **Run assessment (5 controls)**.
+
+A status box reports *Assessing CONTROL-001 (1 of 5)...* and so on, then *Assessed 5 of 5*,
+with one line per control giving its conclusion and risk band. The page reruns with the
+message *Assessed 5 controls. Every result needs your review.* and two links, **Review now**
+and **See findings**.
+
+**What you should see** in the **Results** table (one row per control, most recent
+assessment). The offline provider is deterministic, so these reproduce:
+
+| Control | AI conclusion |
+|---|---|
+| CONTROL-001 Multi-Factor Authentication for Privileged Accounts | Potential deficiency |
+| CONTROL-002 Dormant Account Management | Insufficient evidence |
+| CONTROL-003 Security Patch Management | Potential deficiency |
+| CONTROL-004 Change Management Approval | Potential deficiency |
+| CONTROL-005 Password Policy Enforcement | Not effective |
+
+Every row's **Auditor decision** column reads *Awaiting decision*, and **Fabricated quotes**
+is 0 throughout. **Show every run** and **Show research columns** widen the table; the
+**Filter** popover narrows it.
+
+Two rows are worth pausing on. **CONTROL-002 is "Insufficient evidence", and that is the right
+answer**: the demo contains no dormant-account report, and the system says the control could
+not be tested rather than calling it a deficiency. Insufficient evidence is counted separately
+from deficiencies everywhere in the console. **CONTROL-005 is "Not effective"** because the
+configuration export contradicts the policy outright.
+
+### Read one assessment
+
+The first new result is already open below the table (select any row to open another). The
+assessment screen is the same wherever you meet it:
+
+* A header with the control's name, the badges (conclusion, risk band, evidence sufficiency)
+  and one banner: **AI-generated - requires auditor review**.
+* **What did we find?** — the AI's finding in its own words, unedited.
+* **1. What the control requires** — from the control library, not from the AI.
+* **2. What the evidence shows** — the quotations, each mechanically re-checked against the
+  stored passage. Press **Show the source passage** on a citation to see the rows or
+  paragraph it came from, with the quoted words highlighted.
+* **3. What the AI infers** — the AI's conclusions; nothing here is established by the quotes.
+* **4. What still needs verification** — the points a person must check and the evidence the
+  AI says it did not have.
+* **Auditor review** — the decision form (next step).
+* **Details for researchers (risk arithmetic, retrieval, validation, prompt)** — folded away.
+
+---
+
+## 5. Record a decision
+
+You can record the decision on the assessment screen you are looking at, or from the
+**Review queue** page, which shows the same screen for each item awaiting a decision, with an
+**Assessment to review** picker, *Item 1 of 5 awaiting a decision* and a **Skip to next**
+button. The steps are the same either way.
+
+1. Under **Auditor review**, choose **Your decision**: **Accept finding**, **Modify finding**,
+   **Reject finding** or **Request more evidence**.
+2. **Your conclusion** and **Your risk level** are pre-filled only for *Accept finding*, because
+   that is what accepting means. *Modify* and *Reject* leave them blank for you to choose.
+   *Request more evidence* locks them to *Insufficient evidence* and *Not rated*.
+3. Write a **Comments** line, e.g. *Quotations checked against the export; the configured
+   value is below the policy value.* **Your finding** and **Your recommendation** may be left
+   blank, in which case the AI text stands unchanged and is recorded as such.
+4. Press **Record decision**. (If it is disabled, the sidebar **Your name** field is empty.)
+
+**What you should see.** The message *Decision recorded: Accepted for CONTROL-00n*, the AI
+proposal and your conclusion side by side, and, on the Review queue, the counter down to
+*Item 1 of 4 awaiting a decision*. The tabs **Completed reviews (1)** and **Agreement so
+far** below the queue show the history and the agreement figures with their denominator.
+
+Your decision is a separate record. The AI assessment is never edited, which is what makes
+agreement between the two measurable. A **Request more evidence** decision never counts as
+agreement.
+
+---
+
+## 6. Generate the report
+
+Open **Reports**.
+
+Before the form, a pre-flight notice says *4 assessed control(s) have no auditor decision yet.
+They will appear as 'Pending auditor review' and are excluded from every conclusive figure.*
+with a **Review them now** link. That is the system working correctly: an AI proposal nobody
+has reviewed is not a conclusion.
+
+Leave **Format** on **HTML (.html)** and press **Generate report**.
+
+**What you should see.** *Report #1 generated.*, then the report itself with a **Download
+report (HTML)** button and the path it was also saved to under `data/reports/`. Earlier
+reports are kept under **Previous reports (n)**.
+
+Read four things in the document:
+
+1. The **executive summary** counts only controls with an auditor decision; the four unreviewed
+   controls are listed as *PENDING AUDITOR REVIEW*, with the AI status marked advisory.
+2. **Section 4, Evidence Reviewed**, prints the SHA-256 of every file.
+3. The **evidence references** resolve every citation to filename, locator and verbatim
+   quotation, with its verification verdict beside it.
+4. **Section 10, Limitations**, is part of the document. It states that the assessments are
+   machine-generated and advisory, and, when Demo mode answered, that they were produced by
+   the offline stand-in and not by a language model.
+
+Stop the server with `Ctrl-C`.
+
+---
+
+## Where next
+
+* **Start an audit of your own.** On Home, **Start an audit** opens the **New audit** dialog:
+  **Audit name**, **Audit area**, **Controls to test** (or tick **Start with the standard set
+  of five controls**), **More details**, then **Create audit**, which lands on **Evidence**.
+  Upload files with **Upload and index**, then run the assessment as above.
+* [`USER_GUIDE.md`](USER_GUIDE.md) — every page of the console, the assessment screen in
+  detail, the four decisions, and a glossary.
+* [`SETUP.md`](SETUP.md) — every `run.py` subcommand, every setting, switching on Claude or an
+  OpenAI-compatible endpoint, PostgreSQL, and troubleshooting.
+* **Use a real model.** Add `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY=...` to `.env` and
+  restart; see the Claude section of [`SETUP.md`](SETUP.md). If the key is missing, the sidebar
+  shows a red *Claude was configured but Demo mode answered* alert with the fix.
+* **Run the research experiments.** `.venv/bin/python run.py evaluate` runs conditions A/B/C
+  over the synthetic datasets; the **Experiments** page shows the comparison. Read
+  [`EXAMPLE_RESULTS.md`](EXAMPLE_RESULTS.md) and
+  [`LIMITATIONS_AND_FUTURE_WORK.md`](LIMITATIONS_AND_FUTURE_WORK.md) before quoting any figure.
+* **Run the test suite.** `.venv/bin/python -m pytest tests -q`. The suite redirects the
+  database and every writable directory into a temporary tree and makes no network call.
+  See [`TESTING.md`](TESTING.md).
 * [`../README.md`](../README.md) — what the system is, what it is not, and the safety rules with
   the module that enforces each.
-* [`SETUP.md`](SETUP.md) — the full installation, configuration and operations reference: every
-  setting, PostgreSQL, running the UI against the API, and security notes. This quickstart is the
-  fast path; SETUP is the complete one.
-* [`ARCHITECTURE.md`](ARCHITECTURE.md) — how a request actually flows through the layers.
-* [`API.md`](API.md) — every HTTP endpoint with request and response shapes.
-* [`TESTING.md`](TESTING.md) — what the suite covers, how it is isolated, and what it does not
-  cover.
-* [`RESEARCH_NOTES.md`](RESEARCH_NOTES.md) — which experiments to run for a dissertation, what to
-  vary, and how to phrase the claims.
-* [`SYNTHETIC_DATASETS.md`](SYNTHETIC_DATASETS.md) — what is inside each dataset and why its
-  answer is the correct one.
-* [`EXAMPLE_RESULTS.md`](EXAMPLE_RESULTS.md) — every figure with its provenance and its caveats.
-* [`LIMITATIONS_AND_FUTURE_WORK.md`](LIMITATIONS_AND_FUTURE_WORK.md) — read this before quoting
-  any result.

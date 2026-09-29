@@ -33,6 +33,7 @@ from app.schemas.enums import (
     AssessmentStatus,
     CitationVerdict,
     ConfidenceLevel,
+    EvidenceProvenance,
     EvidenceSufficiency,
     EvidenceType,
     ExperimentMode,
@@ -90,6 +91,9 @@ class ProviderSummary(ApiModel):
     retrieval_strategy: str
     retrieval_top_k: int
     mock_hallucination_rate: float
+    #: Present since the Claude provider was added; older API builds omit them.
+    anthropic_model: str = ""
+    anthropic_api_key: str = Field(default="(not set)", description="Masked fingerprint or '(not set)'. Never the key itself.")
 
 
 class ProviderHealth(ApiModel):
@@ -344,6 +348,14 @@ class EvidenceResponse(ApiModel):
         default_factory=dict, description="Parser extras: sheet names, headers, warnings, indexed_chunks."
     )
     is_synthetic: bool = False
+    provenance: EvidenceProvenance = Field(
+        default=EvidenceProvenance.SYNTHETIC,
+        description=(
+            "Where the artefact came from: SYNTHETIC (generated test data), HISTORICAL_PUBLIC "
+            "(a reconstruction of a publicly documented failure pattern) or ORGANISATIONAL "
+            "(real evidence from an audited entity). Independent of evidence_type."
+        ),
+    )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     sha256_short: str = ""

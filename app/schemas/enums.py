@@ -184,7 +184,7 @@ PROVENANCE_LABELS: Dict[str, str] = {
         "account names; it is not the original organisation's evidence."
     ),
     EvidenceProvenance.ORGANISATIONAL.value: (
-        "Real evidence supplied by an audited entity. Handle under the engagement's "
+        "Real evidence supplied by an audited entity. Handle under the audit's "
         "confidentiality terms."
     ),
 }
@@ -293,6 +293,15 @@ class CitationVerdict(StrEnum):
 class ActivityAction(StrEnum):
     PROJECT_CREATED = "PROJECT_CREATED"
     PROJECT_UPDATED = "PROJECT_UPDATED"
+    #: The project row, its evidence, assessments, reviews and reports were removed,
+    #: together with the stored evidence and report files on disk.
+    PROJECT_DELETED = "PROJECT_DELETED"
+    #: Control library edits. Recorded separately from scoping so the trail can tell "the
+    #: definition of this control changed" from "this control was put in scope".
+    CONTROL_CREATED = "CONTROL_CREATED"
+    CONTROL_UPDATED = "CONTROL_UPDATED"
+    CONTROL_ACTIVATED = "CONTROL_ACTIVATED"
+    CONTROL_DEACTIVATED = "CONTROL_DEACTIVATED"
     CONTROL_LINKED = "CONTROL_LINKED"
     CONTROL_UNLINKED = "CONTROL_UNLINKED"
     EVIDENCE_UPLOADED = "EVIDENCE_UPLOADED"
@@ -302,7 +311,7 @@ class ActivityAction(StrEnum):
     HUMAN_REVIEW_RECORDED = "HUMAN_REVIEW_RECORDED"
     REPORT_GENERATED = "REPORT_GENERATED"
     EVALUATION_RUN = "EVALUATION_RUN"
-    #: A historical case study was imported as an engagement. Recorded as its own action
-    #: so the activity trail says plainly that an engagement's evidence is a
+    #: A historical case study was imported as an audit project. Recorded as its own action
+    #: so the activity trail says plainly that an audit project's evidence is a
     #: reconstruction rather than something an auditor uploaded.
     CASE_STUDY_IMPORTED = "CASE_STUDY_IMPORTED"

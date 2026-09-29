@@ -32,7 +32,14 @@ from app.evidence.chunking import estimate_tokens
 from app.evidence.parsers import ParseResult, parse_file
 from app.evidence.storage import StoredFile, delete_stored, save_upload
 from app.rag.base import SourceLocator
-from app.schemas.enums import ActivityAction, EvidenceType, ParseStatus
+from app.schemas.enums import (
+    DEFAULT_EVIDENCE_PROVENANCE,
+    NON_ORGANISATIONAL_PROVENANCE,
+    ActivityAction,
+    EvidenceProvenance,
+    EvidenceType,
+    ParseStatus,
+)
 
 __all__ = [
     "EvidenceIngestError",
@@ -42,6 +49,7 @@ __all__ = [
     "ingest_file",
     "locator_from_chunk",
     "persist_chunks",
+    "resolve_provenance",
 ]
 
 #: Column widths from ``app.database.models``. SQLite ignores them; PostgreSQL will not.
@@ -59,6 +67,16 @@ class EvidenceTooLargeError(EvidenceIngestError):
     """Raised when an upload exceeds ``settings.max_upload_bytes``."""
 
 
+def resolve_provenance(raw: Optional[Union[str, EvidenceProvenance]]) -> EvidenceProvenance:
+    """Map any spelling of a provenance to a member, defaulting to SYNTHETIC.
+
+    The default is the under-trusting one on purpose; see
+    :data:`~app.schemas.enums.DEFAULT_EVIDENCE_PROVENANCE`. Shared by ingestion and the
+    upload route so the two can never disagree about what an unknown value means.
+    """
+    return EvidenceProvenance.coerce(raw, DEFAULT_EVIDENCE_PROVENANCE)
+
+
 def ingest_file(
     session: Session,
     project_id: int,
@@ -68,6 +86,7 @@ def ingest_file(
     description: str = "",
     uploaded_by: str = "",
     is_synthetic: bool = False,
+    provenance: Optional[Union[str, EvidenceProvenance]] = None,
 ) -> EvidenceFile:
     """Store, parse, chunk, persist and index one uploaded artefact.
 
@@ -76,9 +95,21 @@ def ingest_file(
     ``parse_status`` FAILED or UNSUPPORTED and its warnings rather than being dropped. An
     exception is raised only when nothing is stored at all (missing project, oversized
     upload), so a caller never has to guess whether something reached the database.
+
+    ``provenance`` says where the artefact came from (see
+    :class:`~app.schemas.enums.EvidenceProvenance`) and is written on the row at creation,
+    so there is no window in which a reconstruction or an organisational file carries the
+    wrong label. Anything unrecognised - including ``None`` - resolves to
+    :data:`~app.schemas.enums.DEFAULT_EVIDENCE_PROVENANCE` (SYNTHETIC): a file wrongly
+    labelled synthetic is under-trusted, a file wrongly labelled organisational is a
+    fabricated audit record. ``is_synthetic`` is the older boolean that provenance
+    subsumes; it is forced True for any non-organisational provenance so the two columns
+    can never contradict each other, and a caller's explicit True is never lowered.
     """
     settings = get_settings()
     payload = bytes(data or b"")
+    resolved_provenance = resolve_provenance(provenance)
+    synthetic = bool(is_synthetic) or resolved_provenance in NON_ORGANISATIONAL_PROVENANCE
 
     project = session.get(AuditProject, int(project_id))
     if project is None:
@@ -106,7 +137,8 @@ def ingest_file(
         description=description or None,
         uploaded_by=actor,
         parse_status=ParseStatus.PENDING.value,
-        is_synthetic=bool(is_synthetic),
+        is_synthetic=synthetic,
+        provenance=resolved_provenance.value,
         extra_metadata={},
     )
     session.add(record)
@@ -119,7 +151,17 @@ def ingest_file(
         record.parse_status = ParseStatus.UNSUPPORTED.value
         record.parse_error = message
         record.extra_metadata = {"warnings": [message]}
-        _log(session, record, ActivityAction.EVIDENCE_UPLOADED, actor, {"parse_status": record.parse_status})
+        _log(
+            session,
+            record,
+            ActivityAction.EVIDENCE_UPLOADED,
+            actor,
+            {
+                "parse_status": record.parse_status,
+                "provenance": record.provenance,
+                "is_synthetic": record.is_synthetic,
+            },
+        )
         session.commit()
         return record
 
@@ -155,6 +197,7 @@ def ingest_file(
             "size_bytes": record.size_bytes,
             "sha256": record.sha256,
             "evidence_type": record.evidence_type,
+            "provenance": record.provenance,
             "is_synthetic": record.is_synthetic,
         },
     )

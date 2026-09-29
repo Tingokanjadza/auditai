@@ -30,10 +30,11 @@ router = APIRouter(prefix="/reviews", tags=["reviews"])
         "AI's, even if the decision was MODIFIED or REJECTED. The raw ``decision`` is stored "
         "alongside it, so a stricter definition (ACCEPTED only) can be recomputed from the "
         "same rows without re-reviewing anything.\n\n"
-        "Omitting ``final_status`` carries the AI status over - except for "
-        "MORE_EVIDENCE_REQUESTED, which defaults to INSUFFICIENT_EVIDENCE, because an "
-        "auditor asking for more evidence has not concluded anything. A PENDING decision "
-        "records that the review was opened and never counts as agreement."
+        "Omitting ``final_status`` carries the AI status over for ACCEPTED, MODIFIED and "
+        "REJECTED. MORE_EVIDENCE_REQUESTED always records INSUFFICIENT_EVIDENCE / NOT_RATED "
+        "with both agreement flags false, whatever was supplied, because an auditor asking "
+        "for more evidence has not concluded anything. A PENDING decision records that the "
+        "review was opened and never counts as agreement. ``reviewer_name`` is required."
     ),
 )
 def create_review(

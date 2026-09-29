@@ -71,7 +71,17 @@ _VERSION_KEY = "_ia_da_version"
 
 # ---- errors
 class DataAccessError(RuntimeError):
-    """Anything a page should show the user rather than crash on."""
+    """Anything a page should show the user rather than crash on.
+
+    ``str(exc)`` is the sentence a page shows the auditor: plain language plus a next
+    step where one exists. ``detail`` keeps the raw text of the underlying failure (the
+    SQLAlchemy message, the HTTP body) for an expander or a log line, so simplifying
+    the headline never discards the evidence of what actually went wrong.
+    """
+
+    def __init__(self, message: str, detail: str = "") -> None:
+        super().__init__(message)
+        self.detail = str(detail or message)
 
 
 class NotFoundError(DataAccessError):
@@ -94,11 +104,19 @@ class FeatureUnavailableError(DataAccessError):
 def use_api() -> bool:
     """True when the UI should talk to the FastAPI backend rather than the service layer.
 
-    Read from the environment on every call rather than cached, so the Settings page can
-    flip it without a restart. ``USE_API`` is not a :class:`~app.config.Settings` field:
-    it selects a *transport*, and putting it there would imply the service layer cares.
+    The ``USE_API`` environment variable wins when it is set, and is read on every call
+    rather than cached so the Settings page can flip the transport without a restart.
+    When the variable is absent the answer comes from :attr:`app.config.Settings.use_api`,
+    which is how a ``.env`` file or a hosting platform's config selects the split
+    deployment (UI process and API process) without exporting anything.
     """
-    return str(os.environ.get("USE_API", "")).strip().lower() in {"1", "true", "yes", "on"}
+    raw = os.environ.get("USE_API")
+    if raw is not None and str(raw).strip() != "":
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        return bool(get_settings().use_api)
+    except Exception:  # noqa: BLE001 - an unreadable config means in-process, not a crash
+        return False
 
 
 def backend_mode() -> str:
@@ -164,23 +182,73 @@ def _session_scope():
     return session_scope()
 
 
+#: Plain-language headlines for the failures an auditor is likely to meet. Each is a
+#: sentence and a next step; the raw message stays on ``exc.detail``.
+_MSG_DUPLICATE_PROJECT = "A project with that name already exists. Choose another name."
+_MSG_DUPLICATE_CONTROL = "A control with that identifier already exists. Choose another identifier."
+_MSG_NOT_FOUND = "{0} It may have been deleted. Pick another audit project in the sidebar."
+_MSG_DB_LOCKED = "Another process is using the database. Wait a moment and try again."
+_MSG_LIBRARY_MISSING = "The control library file is missing (data/controls/control_library.json)."
+
+
 def _translate(exc: Exception) -> DataAccessError:
-    """Map a service-layer or transport failure onto this module's vocabulary."""
+    """Map a service-layer or transport failure onto this module's vocabulary.
+
+    The page shows ``str(result)``; the original text is preserved on ``result.detail``.
+    Common failures get a plain sentence with a next step: a duplicate name, a row that
+    has since been deleted, SQLite's "database is locked", and a missing control
+    library file. Anything else passes through with its own message.
+    """
+    raw = str(exc)
+    lowered = raw.lower()
     from app.audit import service as audit_service
 
     if isinstance(exc, audit_service.NotFoundError):
-        return NotFoundError(str(exc))
+        return NotFoundError(_MSG_NOT_FOUND.format(raw.rstrip(".") + "."), detail=raw)
     if isinstance(exc, audit_service.InvalidInputError):
-        return InvalidInputError(str(exc))
+        if "already exists" in lowered or "duplicate" in lowered:
+            return InvalidInputError(_duplicate_message(lowered), detail=raw)
+        return InvalidInputError(raw, detail=raw)
+
     from app.frontend.api_client import ApiError
 
     if isinstance(exc, ApiError):
+        # "GET /api/v1/projects/9 -> 404: Audit project 9 not found." - the auditor
+        # needs the sentence after the colon; the route and code stay on ``detail``.
+        marker = " -> {0}: ".format(exc.status_code) if exc.status_code else ""
+        body = raw.split(marker, 1)[1] if marker and marker in raw else raw
         if exc.status_code == 404:
-            return NotFoundError(str(exc))
+            return NotFoundError(_MSG_NOT_FOUND.format(body.rstrip(".") + "."), detail=raw)
         if exc.status_code in (400, 409, 422):
-            return InvalidInputError(str(exc))
-        return BackendUnavailableError(str(exc))
-    return DataAccessError(str(exc))
+            if exc.status_code == 409 or "already exists" in lowered or "duplicate" in lowered:
+                return InvalidInputError(_duplicate_message(lowered), detail=raw)
+            return InvalidInputError(body, detail=raw)
+        return BackendUnavailableError(raw, detail=raw)
+
+    if isinstance(exc, FileNotFoundError) and (
+        "control library" in lowered or "control_library" in lowered
+    ):
+        return DataAccessError(_MSG_LIBRARY_MISSING, detail=raw)
+
+    try:
+        from sqlalchemy.exc import IntegrityError, OperationalError
+    except Exception:  # noqa: BLE001 - SQLAlchemy is always present in-process; be safe anyway
+        IntegrityError = OperationalError = ()  # type: ignore[assignment,misc]
+
+    if isinstance(exc, IntegrityError) or "unique constraint" in lowered or "duplicate" in lowered:
+        return InvalidInputError(_duplicate_message(lowered), detail=raw)
+    if isinstance(exc, OperationalError) and "database is locked" in lowered:
+        return DataAccessError(_MSG_DB_LOCKED, detail=raw)
+    if "database is locked" in lowered:
+        return DataAccessError(_MSG_DB_LOCKED, detail=raw)
+    return DataAccessError(raw, detail=raw)
+
+
+def _duplicate_message(lowered_text: str) -> str:
+    """Which unique constraint tripped: the control library's, or a project's name."""
+    if "control" in lowered_text:
+        return _MSG_DUPLICATE_CONTROL
+    return _MSG_DUPLICATE_PROJECT
 
 
 def _run(fn: Callable[..., Any]) -> Any:
@@ -209,6 +277,19 @@ def _api_call(fn: Callable[[Any], Any]) -> Any:
         raise _translate(exc) from exc
 
 
+def _api_optional(fn: Callable[[Any], Any]) -> Any:
+    """An API read whose 404 means "no such row", returned as ``None``.
+
+    The in-process ``get_*`` helpers return ``None`` for a missing id because the service
+    layer does; the API answers 404. Both transports must agree, or a page written
+    against one would crash on the other.
+    """
+    try:
+        return _api_call(fn)
+    except NotFoundError:
+        return None
+
+
 # ---- bootstrap and demo data
 def bootstrap_database(overwrite_controls: bool = False) -> Dict[str, Any]:
     """Create the schema and upsert the synthetic control library.
@@ -232,106 +313,68 @@ def bootstrap_database(overwrite_controls: bool = False) -> Dict[str, Any]:
     return result
 
 
-#: Datasets ingested by :func:`load_demo_project`. DATASET-005 and DATASET-006 are
-#: excluded on purpose: both describe the *same* control as DATASET-001 under a
+#: Datasets ingested by :func:`load_demo_project` when none are named. Re-exported from
+#: ``app.database.seed`` - the authoritative list - so pages can show it without importing
+#: the seed module and the two can never drift apart. DATASET-005 and DATASET-006 are
+#: excluded there on purpose: both describe the *same* control as DATASET-001 under a
 #: different condition (005 omits the MFA attribute entirely, 006 shows full
 #: compliance), so putting their files in one project would leave three contradictory
 #: accounts of CONTROL-001 in the same evidence set. They remain available to the
 #: evaluation harness, which gives each dataset an isolated project of its own.
-DEMO_DATASET_IDS: List[str] = ["DATASET-001", "DATASET-002", "DATASET-003", "DATASET-004"]
+from app.database.seed import DEMO_DATASET_IDS  # noqa: E402
 
 
-def load_demo_project(dataset_ids: Optional[Sequence[str]] = None) -> Dict[str, Any]:
-    """Seed the demo project and ingest the generated synthetic evidence into it.
+def load_demo_project(
+    dataset_ids: Optional[Sequence[str]] = None,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> Dict[str, Any]:
+    """Seed the demo audit project and ingest the generated synthetic evidence into it.
 
-    This is the "there is nothing here yet" button. It generates the synthetic files on
-    disk (deterministically - same bytes every time), then ingests each one with its
-    declared evidence type so retrieval can tell a policy from an export. Re-running it
-    adds nothing: a file already ingested into the project under the same name is
-    skipped, so the button is safe to press twice.
+    This is the "Try the demo audit" button. It generates the synthetic files on disk
+    (deterministically - same bytes every time), then ingests each one with its declared
+    evidence type so retrieval can tell a policy from an export. Re-running it adds
+    nothing: a file already ingested into the project under the same name is skipped, so
+    the button is safe to press twice. ``progress(done, total, filename)`` is called
+    after each file so the page can show a progress bar instead of a frozen spinner.
 
     Everything it creates is fabricated for research use. No real system, account or
-    person is represented anywhere in it.
+    person is represented anywhere in it, and nothing it produces is an audit
+    conclusion: the assessments an auditor later runs over it still require review.
+
+    The work itself lives in :func:`app.database.seed.load_demo_evidence`; this function
+    is the UI's door to it (session scope, error translation, cache invalidation).
     """
     # Seeding runs locally in both modes. The API deliberately exposes no endpoint that
     # writes demonstration data into an audit database, and adding one would mean any
     # client that can reach the port could fabricate evidence rows. The UI and the API
     # read the same DATABASE_URL in the supported deployment, so the seeded project is
     # visible over HTTP immediately afterwards.
-    from app.evaluation import datasets as dataset_module
-    from app.evidence.service import ingest_file
     from app.database.base import init_db
-    from app.database.seed import bootstrap
 
     init_db()
-    chosen = list(dataset_ids or DEMO_DATASET_IDS)
-    settings = get_settings()
+    chosen = list(dataset_ids) if dataset_ids else None
+    uploaded_by = get_settings().default_auditor_name
+
+    try:
+        from app.database.seed import load_demo_evidence
+    except ImportError as exc:  # pragma: no cover - the seed module is written alongside
+        raise FeatureUnavailableError(
+            "The demo loader (app.database.seed.load_demo_evidence) is not present in this build.",
+            detail=str(exc),
+        ) from exc
 
     try:
         with _session_scope() as session:
-            seeded = dict(bootstrap(session, overwrite=False))
-            project_id = int(seeded["demo_project_id"])
-
-            from app.audit import service as audit_service
-
-            existing = {
-                item.filename for item in audit_service.list_evidence(session, project_id=project_id)
-            }
-
-            ingested: List[Dict[str, Any]] = []
-            skipped: List[str] = []
-            failures: List[Dict[str, str]] = []
-            for dataset_id in chosen:
-                dataset = dataset_module.get_dataset(dataset_id)
-                paths = dataset_module.generate_dataset(dataset_id)
-                for path in paths:
-                    declared = dataset.file(path.name)
-                    if path.name in existing:
-                        skipped.append(path.name)
-                        continue
-                    try:
-                        record = ingest_file(
-                            session,
-                            project_id,
-                            path.read_bytes(),
-                            path.name,
-                            evidence_type=declared.evidence_type if declared else EvidenceType.OTHER,
-                            description=(
-                                "{0} - synthetic evidence generated for {1}.".format(
-                                    declared.description if declared else "Synthetic artefact",
-                                    dataset_id,
-                                )
-                            ),
-                            uploaded_by=settings.default_auditor_name,
-                            is_synthetic=True,
-                        )
-                        existing.add(path.name)
-                        ingested.append(
-                            {
-                                "filename": record.filename,
-                                "dataset_id": dataset_id,
-                                "evidence_type": record.evidence_type,
-                                "parse_status": record.parse_status,
-                                "chunks": int(record.chunk_count),
-                            }
-                        )
-                    except Exception as exc:  # noqa: BLE001 - one bad file must not stop the seed
-                        failures.append({"filename": path.name, "error": str(exc)})
-
-            summary = {
-                "project_id": project_id,
-                "project_name": seeded.get("demo_project_name", ""),
-                "controls_total": seeded.get("controls_total", 0),
-                "scoped_control_refs": seeded.get("scoped_control_refs", []),
-                "datasets": chosen,
-                "ingested": ingested,
-                "skipped": skipped,
-                "failures": failures,
-                "note": (
-                    "All evidence in this project is synthetic and was generated by "
-                    "app.evaluation.generator. It represents no real organisation."
-                ),
-            }
+            summary = dict(
+                load_demo_evidence(
+                    session,
+                    dataset_ids=chosen,
+                    progress=progress,
+                    uploaded_by=uploaded_by,
+                )
+            )
+    except DataAccessError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise _translate(exc) from exc
 
@@ -373,6 +416,8 @@ def first_run_state() -> Dict[str, Any]:
             "projects": 0,
             "evidence_files": 0,
             "controls_assessed": 0,
+            "has_evidence": False,
+            "demo_project_id": None,
             "needs_data": False,
             "error": str(exc),
         }
@@ -382,8 +427,156 @@ def first_run_state() -> Dict[str, Any]:
         "projects": len(projects),
         "evidence_files": evidence_files,
         "controls_assessed": controls_assessed,
+        "has_evidence": evidence_files > 0,
+        "demo_project_id": _demo_project_id(projects),
         "needs_data": (not projects) or (evidence_files == 0 and controls_assessed == 0),
         "error": "",
+    }
+
+
+def _demo_project_id(projects: Sequence[Mapping[str, Any]]) -> Optional[int]:
+    """The seeded demonstration project's id, if it is in the list."""
+    for item in projects:
+        if item.get("is_demo") and item.get("id") is not None:
+            return int(item["id"])
+    return None
+
+
+def demo_project_id() -> Optional[int]:
+    """The demonstration audit project's id, or ``None`` when none exists (or on error)."""
+    try:
+        return _demo_project_id(list_projects())
+    except DataAccessError:
+        return None
+
+
+# ---- where an audit project stands
+#: Statuses under which a project is no longer being worked. Everything else counts as
+#: an active audit on the home screen.
+_INACTIVE_PROJECT_STATUSES = frozenset({ProjectStatus.COMPLETED.value, ProjectStatus.ARCHIVED.value})
+
+#: The five steps of one audit, in order, with the page each one happens on. ``scope``
+#: points at the project page because that is where controls are added to and removed
+#: from a project's scope; the Controls page is the library.
+_STAGE_STEPS: Tuple[Tuple[str, str, str], ...] = (
+    ("scope", "Choose the controls", "views/audit_projects.py"),
+    ("evidence", "Add evidence", "views/evidence.py"),
+    ("assess", "Run the AI assessment", "views/assessments.py"),
+    ("review", "Record your decisions", "views/human_review.py"),
+    ("report", "Generate the report", "views/reports.py"),
+)
+
+
+def _plural(count: int, singular: str, plural: str = "") -> str:
+    return "{0} {1}".format(count, singular if count == 1 else (plural or singular + "s"))
+
+
+def project_stage(project_id: int) -> Dict[str, Any]:
+    """Where one audit project stands, as a stage name and a five-step checklist.
+
+    ``stage`` is the first thing that is missing, in workflow order::
+
+        no_controls -> no_evidence -> not_assessed -> partly_assessed
+                    -> pending_review -> ready_to_report -> reported
+
+    ``pending_review`` is a stage in its own right, and it comes before "ready to
+    report", because an AI assessment with no recorded auditor decision is not a
+    conclusion and a report generated over it would be a report of guesses. The rule is
+    the same one :func:`app.audit.service.dashboard_stats` uses for
+    ``pending_human_reviews``: a PENDING review is not a decision.
+
+    ``steps`` is an ordered list of five dictionaries, one per step, each with ``key``,
+    ``label``, ``page`` (a ``views/...py`` path for ``st.switch_page`` /
+    ``st.page_link``), ``count_text`` (for example ``"3 of 5 assessed"``), ``done`` and
+    ``current`` (the first step not done; ``report`` when everything is done). Reads go
+    through the memoised :func:`dashboard_stats` and :func:`list_reports`, so calling
+    this on every rerun costs nothing extra.
+    """
+    stats = dashboard_stats(int(project_id))
+    reports = list_reports(int(project_id))
+
+    controls_in_scope = int(stats.get("controls_in_scope", 0) or 0)
+    evidence_files = int(stats.get("evidence_files", 0) or 0)
+    controls_assessed = int(stats.get("controls_assessed", 0) or 0)
+    pending = int(stats.get("pending_human_reviews", 0) or 0)
+    report_count = len(reports)
+
+    if controls_in_scope == 0:
+        stage = "no_controls"
+    elif evidence_files == 0:
+        stage = "no_evidence"
+    elif controls_assessed == 0:
+        stage = "not_assessed"
+    elif controls_assessed < controls_in_scope:
+        stage = "partly_assessed"
+    elif pending > 0:
+        stage = "pending_review"
+    elif report_count == 0:
+        stage = "ready_to_report"
+    else:
+        stage = "reported"
+
+    done_by_key = {
+        "scope": controls_in_scope > 0,
+        "evidence": evidence_files > 0,
+        "assess": controls_in_scope > 0 and controls_assessed >= controls_in_scope,
+        "review": controls_assessed > 0 and pending == 0,
+        "report": report_count > 0,
+    }
+    count_by_key = {
+        "scope": "{0} in scope".format(controls_in_scope),
+        "evidence": _plural(evidence_files, "file"),
+        "assess": "{0} of {1} assessed".format(controls_assessed, controls_in_scope),
+        "review": "{0} awaiting decision".format(pending),
+        "report": "{0} generated".format(report_count),
+    }
+    current_key = next((key for key, _, _ in _STAGE_STEPS if not done_by_key[key]), "report")
+
+    steps = [
+        {
+            "key": key,
+            "label": label,
+            "page": page,
+            "count_text": count_by_key[key],
+            "done": bool(done_by_key[key]),
+            "current": key == current_key,
+        }
+        for key, label, page in _STAGE_STEPS
+    ]
+    return {
+        "project_id": int(project_id),
+        "stage": stage,
+        "controls_in_scope": controls_in_scope,
+        "evidence_files": evidence_files,
+        "controls_assessed": controls_assessed,
+        "pending_reviews": pending,
+        "reports": report_count,
+        "steps": steps,
+    }
+
+
+def portfolio_overview() -> Dict[str, Any]:
+    """The home screen's three numbers plus where the demo lives.
+
+    * ``projects`` - audit projects visible to an auditor (evaluation-harness projects
+      are excluded by :func:`list_projects`).
+    * ``active_audits`` - those not COMPLETED or ARCHIVED.
+    * ``awaiting_review`` - AI assessments across every project with no auditor
+      decision yet (``pending_human_reviews`` from :func:`dashboard_stats`).
+    * ``demo_project_id`` - the seeded demonstration project, or ``None``.
+    """
+    projects = list_projects()
+    stats = dashboard_stats()
+    active = [
+        item
+        for item in projects
+        if str(item.get("status", "") or "").upper() not in _INACTIVE_PROJECT_STATUSES
+    ]
+    return {
+        "projects": len(projects),
+        "active_audits": len(active),
+        "awaiting_review": int(stats.get("pending_human_reviews", 0) or 0),
+        "demo_project_id": _demo_project_id(projects),
     }
 
 
@@ -452,6 +645,27 @@ def refresh_settings() -> Dict[str, Any]:
     return settings_summary()
 
 
+#: Plain names for the sidebar badge. Kept here rather than imported from
+#: :mod:`app.frontend.components` because the facade must not depend on the widgets.
+#: The mock's name says what it is - offline rules - so that no screenshot can present
+#: it as a model.
+PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
+    "mock": "Demo mode (offline rules)",
+    "claude": "Claude",
+    "anthropic": "Claude",
+    "openai": "OpenAI",
+}
+_PROVIDER_DISPLAY_NAMES = PROVIDER_DISPLAY_NAMES  # backwards-compatible private alias
+
+
+def provider_display_name(provider: Any) -> str:
+    """Human name for a provider key; unknown keys are shown as typed."""
+    key = str(provider or "").strip().lower()
+    if not key:
+        return "No provider"
+    return _PROVIDER_DISPLAY_NAMES.get(key, str(provider))
+
+
 def provider_badge() -> Dict[str, Any]:
     """What the sidebar needs to say about the model, unambiguously.
 
@@ -460,6 +674,9 @@ def provider_badge() -> Dict[str, Any]:
     measures the pipeline rather than model capability. The UI must never let that be
     mistaken, including - especially - when a real provider was *selected* but is
     unconfigured and the factory quietly fell back.
+
+    ``demo_mode`` is ``is_mock`` under the name the auditor-facing screens use, and
+    ``display_name`` is the plain name of whatever is actually answering.
     """
 
     def produce() -> Dict[str, Any]:
@@ -494,6 +711,9 @@ def provider_badge() -> Dict[str, Any]:
             "configured_provider": configured,
             "active_model": str(health.get("active_model", "") or ""),
             "is_mock": is_mock,
+            "demo_mode": is_mock,
+            "display_name": provider_display_name(active),
+            "configured_display_name": provider_display_name(configured),
             "fell_back_to_mock": fell_back,
             "label": label,
             "detail": detail,
@@ -583,7 +803,7 @@ def list_projects(
 def get_project(project_id: int) -> Optional[Dict[str, Any]]:
     def produce() -> Optional[Dict[str, Any]]:
         if use_api():
-            return _api_call(lambda client: client.get_project(project_id))
+            return _api_optional(lambda client: client.get_project(project_id))
 
         def query(session: Any) -> Optional[Dict[str, Any]]:
             from app.audit import service as audit_service
@@ -715,7 +935,7 @@ def list_controls(
 def get_control(control_id_or_ref: Any) -> Optional[Dict[str, Any]]:
     def produce() -> Optional[Dict[str, Any]]:
         if use_api():
-            return _api_call(lambda client: client.get_control(control_id_or_ref))
+            return _api_optional(lambda client: client.get_control(control_id_or_ref))
 
         def query(session: Any) -> Optional[Dict[str, Any]]:
             from app.audit import service as audit_service
@@ -797,22 +1017,29 @@ def control_categories(active_only: bool = True) -> List[str]:
     return _memo(("control_categories", active_only, use_api()), produce)
 
 
-def list_scoped_controls(project_id: int) -> List[Dict[str, Any]]:
+def list_scoped_controls(project_id: int, active_only: bool = False) -> List[Dict[str, Any]]:
+    """Controls in a project's scope. ``active_only=True`` leaves out retired controls,
+    which is what a control picker for a *new* assessment run wants; the default keeps
+    retired controls so existing assessments can still be read against them."""
+
     def produce() -> List[Dict[str, Any]]:
         if use_api():
             # The scope endpoint returns references only; the control list endpoint
-            # narrowed by project returns the full rows the pages need.
-            return _api_call(lambda client: client.list_controls(project_id=int(project_id)))
+            # narrowed by project returns the full rows the pages need. ``active_only``
+            # is passed explicitly because the endpoint's own default is True.
+            return _api_call(
+                lambda client: client.list_controls(project_id=int(project_id), active_only=bool(active_only))
+            )
 
         def query(session: Any) -> List[Dict[str, Any]]:
             from app.audit import service as audit_service
 
-            rows = audit_service.list_scoped_controls(session, project_id)
+            rows = audit_service.list_scoped_controls(session, project_id, active_only=bool(active_only))
             return [audit_service.control_to_dict(row) for row in rows]
 
         return _run(query)
 
-    return _memo(("scoped_controls", int(project_id), use_api()), produce)
+    return _memo(("scoped_controls", int(project_id), bool(active_only), use_api()), produce)
 
 
 def list_unscoped_controls(project_id: int, active_only: bool = True) -> List[Dict[str, Any]]:
@@ -922,7 +1149,7 @@ def get_evidence(evidence_file_id: int) -> Optional[Dict[str, Any]]:
 
     def produce() -> Optional[Dict[str, Any]]:
         if use_api():
-            return _api_call(lambda client: client.get_evidence(evidence_file_id))
+            return _api_optional(lambda client: client.get_evidence(evidence_file_id))
 
         def query(session: Any) -> Optional[Dict[str, Any]]:
             from app.audit import service as audit_service
@@ -944,6 +1171,7 @@ def upload_evidence(
     description: str = "",
     uploaded_by: str = "",
     is_synthetic: bool = False,
+    provenance: Any = None,
 ) -> Dict[str, Any]:
     """Store, parse, chunk and index one uploaded artefact.
 
@@ -951,8 +1179,15 @@ def upload_evidence(
     UNSUPPORTED and the reason attached - the UI shows that rather than pretending the
     upload vanished. Only a rejected upload (missing project, over the size limit)
     raises.
+
+    ``provenance`` (an ``EvidenceProvenance`` member or its value) is recorded on the row
+    at creation by ``ingest_file``; over the REST API it travels as a form field. ``None``
+    means "nobody said", which both transports resolve to SYNTHETIC.
     """
     resolved_type = str(getattr(evidence_type, "value", evidence_type) or EvidenceType.OTHER.value)
+    resolved_provenance = (
+        str(getattr(provenance, "value", provenance)) if provenance not in (None, "") else None
+    )
     if use_api():
         result = _api_call(
             lambda client: client.upload_evidence(
@@ -962,6 +1197,8 @@ def upload_evidence(
                 evidence_type=resolved_type,
                 description=description,
                 uploaded_by=uploaded_by,
+                is_synthetic=is_synthetic,
+                provenance=resolved_provenance,
             )
         )
     else:
@@ -979,6 +1216,7 @@ def upload_evidence(
                 description=description,
                 uploaded_by=uploaded_by,
                 is_synthetic=is_synthetic,
+                provenance=resolved_provenance,
             )
             return audit_service.evidence_to_dict(record)
 
@@ -1169,7 +1407,7 @@ def get_assessment(assessment_id: int) -> Optional[Dict[str, Any]]:
 
     def produce() -> Optional[Dict[str, Any]]:
         if use_api():
-            payload = _api_call(lambda client: client.get_assessment(assessment_id))
+            payload = _api_optional(lambda client: client.get_assessment(assessment_id))
             if payload is None:
                 return None
             data = dict(payload)
@@ -1296,13 +1534,20 @@ def run_project_assessment(
     control_refs: Optional[Sequence[Any]] = None,
     persist: bool = True,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    on_start: Optional[Callable[[int, int, str], None]] = None,
 ) -> List[Dict[str, Any]]:
     """Assess every scoped control (or a named subset), one at a time.
 
-    ``progress(done, total, control_ref)`` is called after each control so the page can
-    drive a progress bar. Controls are assessed in separate engine calls rather than via
-    ``assess_project`` for exactly that reason - a run over twelve controls with no
-    feedback looks like a hung application.
+    ``on_start(index, total, control_ref)`` is called before each control (``index`` is
+    1-based) and ``progress(done, total, control_ref)`` after it, so the page can name
+    the control being worked on and drive a progress bar. Controls are assessed in
+    separate engine calls rather than via ``assess_project`` for exactly that reason - a
+    run over twelve controls with no feedback looks like a hung application.
+
+    One failing control does not end the run: its error is recorded in the returned
+    list and, in-process, the session is rolled back before the next control so a
+    half-written row cannot poison the ones that follow. Nothing here runs without the
+    caller's explicit request; every result still requires auditor review.
     """
     resolved_mode = str(getattr(mode, "value", mode) or ExperimentMode.C_RAG_WORKFLOW.value)
     refs = [str(ref) for ref in control_refs] if control_refs else [
@@ -1317,6 +1562,8 @@ def run_project_assessment(
         # them.
         out: List[Dict[str, Any]] = []
         for index, ref in enumerate(refs, start=1):
+            if on_start is not None:
+                on_start(index, total, ref)
             try:
                 out.append(
                     _api_call(
@@ -1343,11 +1590,26 @@ def run_project_assessment(
         engine = AssessmentEngine(session)
         out: List[Dict[str, Any]] = []
         for index, ref in enumerate(refs, start=1):
+            if on_start is not None:
+                on_start(index, total, ref)
             try:
                 outcome = engine.assess_control(project_id, ref, mode=resolved_mode, persist=persist)
                 out.append(dict(outcome.to_dict()))
             except Exception as exc:  # noqa: BLE001 - one bad control must not end the run
-                out.append({"control_ref": ref, "error": str(exc), "status": "", "assessment_id": None})
+                # A failed flush leaves the session in a state that rejects every later
+                # statement; roll it back so the remaining controls get a clean slate.
+                try:
+                    session.rollback()
+                except Exception:  # noqa: BLE001 - nothing more can be done for this session
+                    pass
+                out.append(
+                    {
+                        "control_ref": ref,
+                        "error": str(_translate(exc)),
+                        "status": "",
+                        "assessment_id": None,
+                    }
+                )
             if progress is not None:
                 progress(index, total, ref)
         return out
@@ -1579,7 +1841,7 @@ def get_report(report_id: int) -> Optional[Dict[str, Any]]:
 
     def produce() -> Optional[Dict[str, Any]]:
         if use_api():
-            return _api_call(lambda client: client.get_report(report_id))
+            return _api_optional(lambda client: client.get_report(report_id))
 
         def query(session: Any) -> Optional[Dict[str, Any]]:
             from app.audit import service as audit_service
@@ -1697,7 +1959,7 @@ def get_evaluation_run(run_id: int) -> Optional[Dict[str, Any]]:
 
     def produce() -> Optional[Dict[str, Any]]:
         if use_api():
-            return _api_call(lambda client: client.get_run(run_id))
+            return _api_optional(lambda client: client.get_run(run_id))
 
         def query(session: Any) -> Optional[Dict[str, Any]]:
             from app.database.models import EvaluationRun
@@ -2112,6 +2374,7 @@ __all__ = [
     "default_mode",
     "delete_evidence",
     "delete_project",
+    "demo_project_id",
     "evaluation_available",
     "evidence_types",
     "experiment_modes",
@@ -2143,9 +2406,13 @@ __all__ = [
     "list_unscoped_controls",
     "load_demo_project",
     "pending_reviews",
+    "portfolio_overview",
     "project_evidence_stats",
+    "project_stage",
     "project_statuses",
     "provider_badge",
+    "PROVIDER_DISPLAY_NAMES",
+    "provider_display_name",
     "record_review",
     "refresh_settings",
     "risk_breakdown",

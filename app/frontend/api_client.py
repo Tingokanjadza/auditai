@@ -295,19 +295,28 @@ class ApiClient:
         description: str = "",
         uploaded_by: str = "",
         is_synthetic: bool = False,
+        provenance: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Multipart upload. The bytes are sent as-is; nothing is written locally first."""
+        """Multipart upload. The bytes are sent as-is; nothing is written locally first.
+
+        ``provenance`` travels as an ordinary form field. It is omitted when ``None`` so
+        the server applies its own default (SYNTHETIC) rather than receiving the string
+        "None".
+        """
+        form: Dict[str, str] = {
+            "project_id": str(int(project_id)),
+            "evidence_type": str(evidence_type),
+            "description": description or "",
+            "uploaded_by": uploaded_by or "",
+            "is_synthetic": "true" if is_synthetic else "false",
+        }
+        if provenance:
+            form["provenance"] = str(getattr(provenance, "value", provenance))
         return _as_dict(
             self.request(
                 "upload_evidence",
                 files={"file": (filename, bytes(data), "application/octet-stream")},
-                data={
-                    "project_id": str(int(project_id)),
-                    "evidence_type": str(evidence_type),
-                    "description": description or "",
-                    "uploaded_by": uploaded_by or "",
-                    "is_synthetic": "true" if is_synthetic else "false",
-                },
+                data=form,
             )
         )
 

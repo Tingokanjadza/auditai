@@ -116,9 +116,9 @@ def update_project(
     response_model=DeleteResponse,
     summary="Delete an audit project",
     description=(
-        "Cascades to the project's evidence rows, assessments, reviews and reports. The "
-        "stored evidence files on disk are not removed by this call; delete them through "
-        "the evidence endpoints if that is intended."
+        "Cascades to the project's evidence rows, assessments, reviews and reports, and "
+        "removes the project's stored evidence files and rendered report files from disk. "
+        "The deletion is written to the activity trail as PROJECT_DELETED."
     ),
 )
 def delete_project(

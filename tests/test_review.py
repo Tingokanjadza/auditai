@@ -223,9 +223,79 @@ def test_negative_review_time_is_floored_at_zero(seeded_session, completed_asses
     assert review.review_seconds == 0.0
 
 
-def test_the_reviewer_name_defaults_to_configuration(seeded_session, completed_assessment, settings):
-    review = service.record_human_review(seeded_session, completed_assessment.id, "", HumanDecision.ACCEPTED)
-    assert review.reviewer_name == settings.default_auditor_name
+@pytest.mark.parametrize("name", ["", "   ", None])
+def test_a_blank_reviewer_name_is_refused(seeded_session, completed_assessment, name):
+    """A review is the human half of the record; an anonymous one cannot be attributed."""
+    with pytest.raises(InvalidInputError) as excinfo:
+        service.record_human_review(seeded_session, completed_assessment.id, name, HumanDecision.ACCEPTED)
+    assert "Reviewer name is required" in str(excinfo.value)
+    assert service.list_reviews(seeded_session, assessment_id=completed_assessment.id) == []
+
+
+def test_the_reviewer_name_is_stored_trimmed(seeded_session, completed_assessment):
+    review = service.record_human_review(
+        seeded_session, completed_assessment.id, "  A. Auditor  ", HumanDecision.ACCEPTED
+    )
+    assert review.reviewer_name == "A. Auditor"
+
+
+def test_more_evidence_requested_overrides_whatever_the_form_sent(seeded_session, completed_assessment):
+    """A stale status left in the form must not turn a request for evidence into a
+    conclusion that happens to agree with the AI."""
+    review = service.record_human_review(
+        seeded_session,
+        completed_assessment.id,
+        "A. Auditor",
+        HumanDecision.MORE_EVIDENCE_REQUESTED,
+        final_status=completed_assessment.status,
+        final_risk_level=completed_assessment.risk_level,
+    )
+    assert review.final_status == AssessmentStatus.INSUFFICIENT_EVIDENCE.value
+    assert review.final_risk_level == RiskLevel.NOT_RATED.value
+    assert review.agreed_with_ai_status is False
+    assert review.agreed_with_ai_risk is False
+
+
+def test_more_evidence_requested_is_completed_but_never_agreement(seeded_session, completed_assessment):
+    """It leaves the queue (the auditor acted) and lands in the denominator only."""
+    service.record_human_review(
+        seeded_session, completed_assessment.id, "A. Auditor", HumanDecision.MORE_EVIDENCE_REQUESTED
+    )
+    stats = service.dashboard_stats(seeded_session, project_id=completed_assessment.project_id)
+    assert stats["pending_human_reviews"] == 0
+    assert stats["completed_reviews"] == 1
+    assert stats["human_ai_agreement_rate"] == 0.0
+    # The definition is shown to auditors, so it names the decision in plain words.
+    assert "request more evidence" in stats["definitions"]["human_ai_agreement_rate"]
+    assert "never agreement" in stats["definitions"]["human_ai_agreement_rate"]
+
+
+def test_pending_overrides_whatever_the_form_sent(seeded_session, completed_assessment):
+    review = service.record_human_review(
+        seeded_session,
+        completed_assessment.id,
+        "A. Auditor",
+        HumanDecision.PENDING,
+        final_status=completed_assessment.status,
+        final_risk_level=completed_assessment.risk_level,
+    )
+    assert review.final_status == ""
+    assert review.final_risk_level == RiskLevel.NOT_RATED.value
+    assert review.agreed_with_ai_status is False
+    assert review.agreed_with_ai_risk is False
+
+
+def test_a_bad_final_value_is_still_reported_when_the_decision_would_override_it(
+    seeded_session, completed_assessment
+):
+    with pytest.raises(InvalidInputError):
+        service.record_human_review(
+            seeded_session,
+            completed_assessment.id,
+            "A. Auditor",
+            HumanDecision.MORE_EVIDENCE_REQUESTED,
+            final_status="NOT_A_STATUS",
+        )
 
 
 def test_the_review_is_written_to_the_activity_trail(seeded_session, completed_assessment):
@@ -293,6 +363,30 @@ def test_the_queue_and_the_dashboard_cannot_disagree(seeded_session, completed_a
     queue = service.pending_reviews(seeded_session, project_id=completed_assessment.project_id)
     stats = service.dashboard_stats(seeded_session, project_id=completed_assessment.project_id)
     assert stats["pending_human_reviews"] == len(queue)
+
+
+def test_list_assessments_unreviewed_agrees_with_the_dashboard(
+    seeded_session, ingested_project, engine_factory
+):
+    """``reviewed=False`` means "no review, or the latest review is PENDING" - the same
+    definition ``pending_reviews`` and ``dashboard_stats`` use. A re-opened review (a
+    PENDING row after an ACCEPTED one) must therefore be pending in all three places."""
+    service.scope_controls(seeded_session, ingested_project.id, ["CONTROL-005"])
+    engine = engine_factory()
+    first = engine.assess_control(ingested_project.id, "CONTROL-001", mode=ExperimentMode.B_RAG)
+    second = engine.assess_control(ingested_project.id, "CONTROL-005", mode=ExperimentMode.B_RAG)
+    # Accepted, then re-opened: the latest row is PENDING, so it is unreviewed again.
+    service.record_human_review(seeded_session, first.assessment_id, "A", HumanDecision.ACCEPTED)
+    service.record_human_review(seeded_session, first.assessment_id, "A", HumanDecision.PENDING)
+    service.record_human_review(seeded_session, second.assessment_id, "A", HumanDecision.ACCEPTED)
+
+    p = ingested_project.id
+    unreviewed = service.list_assessments(seeded_session, project_id=p, reviewed=False, latest_per_control=True)
+    reviewed = service.list_assessments(seeded_session, project_id=p, reviewed=True, latest_per_control=True)
+    assert [a.id for a in unreviewed] == [first.assessment_id]
+    assert [a.id for a in reviewed] == [second.assessment_id]
+    assert len(unreviewed) == service.dashboard_stats(seeded_session, project_id=p)["pending_human_reviews"]
+    assert [a.id for a in service.pending_reviews(seeded_session, project_id=p)] == [a.id for a in unreviewed]
 
 
 def test_list_reviews_filters(seeded_session, completed_assessment):

@@ -21,7 +21,7 @@ from app.schemas.api import (
     EvidenceResponse,
     EvidenceStatsResponse,
 )
-from app.schemas.enums import EvidenceType, ParseStatus
+from app.schemas.enums import EvidenceProvenance, EvidenceType, ParseStatus
 
 router = APIRouter(prefix="/evidence", tags=["evidence"])
 
@@ -58,6 +58,14 @@ def upload_evidence(
     is_synthetic: bool = Form(
         default=False, description="Mark generated research data as synthetic so it is never mistaken for fieldwork."
     ),
+    provenance: EvidenceProvenance = Form(
+        default=EvidenceProvenance.SYNTHETIC,
+        description=(
+            "Where the artefact came from: SYNTHETIC, HISTORICAL_PUBLIC or ORGANISATIONAL. "
+            "Omitted means SYNTHETIC - the under-trusting default. Any non-organisational "
+            "provenance also marks the file synthetic."
+        ),
+    ),
     session: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     settings = get_settings()
@@ -88,6 +96,7 @@ def upload_evidence(
         description=description,
         uploaded_by=uploaded_by,
         is_synthetic=is_synthetic,
+        provenance=provenance,
     )
     return service.evidence_metadata(session, record.id)
 
@@ -104,6 +113,9 @@ def list_evidence(
     evidence_type: Optional[List[EvidenceType]] = Query(default=None, description="Repeatable."),
     parse_status: Optional[List[ParseStatus]] = Query(default=None, description="Repeatable."),
     search: str = Query(default="", description="Substring match on filename."),
+    provenance: Optional[List[EvidenceProvenance]] = Query(
+        default=None, description="Repeatable. Where the evidence came from."
+    ),
 ) -> List[Dict[str, Any]]:
     files = service.list_evidence(
         session,
@@ -111,6 +123,7 @@ def list_evidence(
         evidence_type=[item.value for item in evidence_type] if evidence_type else None,
         parse_status=[item.value for item in parse_status] if parse_status else None,
         search=search,
+        provenance=[item.value for item in provenance] if provenance else None,
     )
     return [service.evidence_to_dict(item) for item in files]
 

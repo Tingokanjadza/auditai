@@ -72,7 +72,14 @@ os.environ.update(_ENVIRONMENT)
 # Removed rather than blanked: a real key present in the environment must not reach a
 # provider constructor even by accident, and an empty string is still "set" to some
 # libraries.
-for _secret in ("LLM_API_KEY", "LLM_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_BASE_URL"):
+for _secret in (
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "EMBEDDING_API_KEY",
+    "EMBEDDING_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+):
     os.environ.pop(_secret, None)
 
 import pytest  # noqa: E402

@@ -27,12 +27,27 @@ the page decides where the data comes from.
 from __future__ import annotations
 
 import html
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
+import inspect
+import re
+from datetime import timezone, datetime
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import pandas as pd
 import streamlit as st
 
 from app.frontend import theme
+from app.schemas.enums import (
+    AssessmentStatus,
+    CitationVerdict,
+    ConfidenceLevel,
+    EvidenceSufficiency,
+    EvidenceType,
+    ExperimentMode,
+    HumanDecision,
+    ParseStatus,
+    ProjectStatus,
+    RiskLevel,
+)
 
 #: The line that must appear above every AI output in this application. It is a
 #: constant rather than a literal in each page so that it cannot drift into a softer
@@ -70,8 +85,12 @@ PROVIDER_MISMATCH_NOTE = (
 #: says "Claude", not "claude"; an id that is not in here is shown verbatim rather than
 #: guessed at, because inventing a friendly name for an unknown provider is exactly the
 #: kind of helpfulness that would let a wrong provider look right.
+#: Must agree with ``app.frontend.data_access.PROVIDER_DISPLAY_NAMES`` (the facade keeps
+#: its own copy so it never imports the widgets); ``tests/test_frontend_contracts.py``
+#: checks the two tables stay identical. The mock's name says what it is - offline
+#: rules - so the badge and the mismatch alert cannot present it as a model.
 PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
-    "mock": "Mock",
+    "mock": "Demo mode (offline rules)",
     "claude": "Claude",
     "anthropic": "Claude",
     "openai": "OpenAI",
@@ -113,25 +132,182 @@ def _slug(value: Any) -> str:
     return _label_of(value).upper().replace(" ", "_").replace("-", "_").lower().replace("_", "-")
 
 
+def _token(value: Any) -> str:
+    """Normalise an enum member, a raw string or ``None`` to the ``UPPER_SNAKE`` token."""
+    return _label_of(value).upper().replace(" ", "_").replace("-", "_")
+
+
+# ---- friendly labels: the single source of the words an auditor reads
+#: Every enum token this console ever shows, mapped to the phrase an auditor reads in its
+#: place. Raw tokens such as ``POTENTIAL_DEFICIENCY`` or ``C_RAG_WORKFLOW`` are kept for
+#: tooltips, filters and exports; they are never the primary text of a badge or a
+#: heading. One dictionary, so a wording change happens in one place and so a test can
+#: assert that every member of every enum has an entry.
+LABELS: Dict[str, Dict[str, str]] = {
+    "status": {
+        AssessmentStatus.EFFECTIVE.value: "Effective",
+        AssessmentStatus.POTENTIAL_DEFICIENCY.value: "Potential deficiency",
+        AssessmentStatus.INSUFFICIENT_EVIDENCE.value: "Insufficient evidence",
+        AssessmentStatus.NOT_EFFECTIVE.value: "Not effective",
+        AssessmentStatus.NOT_APPLICABLE.value: "Not applicable",
+        "NOT_ASSESSED": "Not assessed",
+    },
+    "risk": {
+        RiskLevel.LOW.value: "Low",
+        RiskLevel.MEDIUM.value: "Medium",
+        RiskLevel.HIGH.value: "High",
+        RiskLevel.CRITICAL.value: "Critical",
+        RiskLevel.NOT_RATED.value: "Not rated",
+    },
+    "decision": {
+        HumanDecision.PENDING.value: "Awaiting decision",
+        HumanDecision.ACCEPTED.value: "Accepted",
+        HumanDecision.MODIFIED.value: "Modified",
+        HumanDecision.REJECTED.value: "Rejected",
+        HumanDecision.MORE_EVIDENCE_REQUESTED.value: "More evidence requested",
+    },
+    "sufficiency": {
+        EvidenceSufficiency.SUFFICIENT.value: "Sufficient",
+        EvidenceSufficiency.PARTIAL.value: "Partly sufficient",
+        EvidenceSufficiency.INSUFFICIENT.value: "Not sufficient",
+        EvidenceSufficiency.NONE.value: "No evidence",
+    },
+    "verdict": {
+        CitationVerdict.VERIFIED.value: "Verified quote",
+        CitationVerdict.PARTIAL.value: "Partly matched",
+        CitationVerdict.UNVERIFIED.value: "Not found in evidence",
+        CitationVerdict.FABRICATED.value: "Fabricated - not in the evidence",
+    },
+    "mode": {
+        ExperimentMode.A_RAW_LLM.value: "Mode A - raw model (research baseline)",
+        ExperimentMode.B_RAG.value: "Mode B - retrieval only (research)",
+        ExperimentMode.C_RAG_WORKFLOW.value: "Full audit workflow (recommended)",
+        "UNKNOWN": "Mode unknown",
+    },
+    "project_status": {
+        ProjectStatus.PLANNING.value: "Planning",
+        ProjectStatus.FIELDWORK.value: "Fieldwork",
+        ProjectStatus.REVIEW.value: "In review",
+        ProjectStatus.COMPLETED.value: "Completed",
+        ProjectStatus.ARCHIVED.value: "Archived",
+    },
+    "evidence_type": {
+        EvidenceType.POLICY.value: "Policy",
+        EvidenceType.STANDARD.value: "Standard",
+        EvidenceType.CONFIGURATION_EXPORT.value: "Configuration export",
+        EvidenceType.SYSTEM_REPORT.value: "System report",
+        EvidenceType.USER_LISTING.value: "User listing",
+        EvidenceType.TICKET_EXPORT.value: "Ticket export",
+        EvidenceType.LOG_EXTRACT.value: "Log extract",
+        EvidenceType.SCREENSHOT_NARRATIVE.value: "Screenshot narrative",
+        EvidenceType.INTERVIEW_NOTES.value: "Interview notes",
+        EvidenceType.OTHER.value: "Other",
+    },
+    "parse": {
+        ParseStatus.PENDING.value: "Not parsed yet",
+        ParseStatus.PARSED.value: "Parsed",
+        ParseStatus.FAILED.value: "Parsing failed",
+        ParseStatus.UNSUPPORTED.value: "Unsupported file type",
+    },
+    "confidence": {
+        ConfidenceLevel.LOW.value: "Low confidence",
+        ConfidenceLevel.MEDIUM.value: "Medium confidence",
+        ConfidenceLevel.HIGH.value: "High confidence",
+        "UNKNOWN": "Confidence unknown",
+    },
+}
+
+
+def label(kind: str, value: Any) -> str:
+    """The phrase an auditor reads for an enum token.
+
+    ``kind`` is one of the keys of :data:`LABELS`; ``value`` may be an enum member, a raw
+    string in any casing, or ``None``. A token with no entry is returned title-cased with
+    its underscores turned into spaces rather than raised on, so an unexpected value from
+    a newer backend degrades to something readable instead of taking the page down. An
+    empty value returns "".
+    """
+    token = _token(value)
+    if not token:
+        return ""
+    table = LABELS.get(kind, {})
+    if token in table:
+        return table[token]
+    return token.replace("_", " ").title()
+
+
+def when(value: Any) -> str:
+    """``"2026-09-18T14:03:22+00:00"`` -> ``"18 Sep 2026 14:03"``; "" for empty.
+
+    Accepts an ISO string, a ``datetime`` or a pandas timestamp. Anything that cannot be
+    parsed is returned as the text it came in as, trimmed, so a table never shows a
+    blank where a stored value exists.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float) and value != value:  # NaN
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in ("none", "nat", "nan"):
+        return ""
+    moment: Optional[datetime] = None
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        try:
+            parsed = pd.to_datetime(text, errors="coerce", utc=False)
+        except Exception:  # noqa: BLE001 - odd inputs degrade to the raw text
+            parsed = None
+        if parsed is not None and not pd.isna(parsed):
+            moment = parsed.to_pydatetime()
+    if moment is None:
+        return text
+    # Stored timestamps are UTC (see app.database.base); show them in the viewer's
+    # local time so "when did I run this" reads the way the clock on the wall does.
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    try:
+        moment = moment.astimezone()
+    except (ValueError, OverflowError):  # pragma: no cover - absurd dates
+        pass
+    return "{0} {1}".format(moment.day, moment.strftime("%b %Y %H:%M"))
+
+
 # ---- badges (return HTML)
+#: Badge CSS prefix -> :data:`LABELS` kind. The CSS prefixes predate the labels table
+#: and are baked into the stylesheet, so they are mapped rather than renamed.
+_BADGE_KINDS: Dict[str, str] = {
+    "status": "status",
+    "risk": "risk",
+    "conf": "confidence",
+    "suff": "sufficiency",
+    "verdict": "verdict",
+    "decision": "decision",
+    "mode": "mode",
+    "parse": "parse",
+}
+
+
 def _badge(kind: str, value: Any, sub: str = "", fallback: str = "-") -> str:
-    label = _label_of(value) or fallback
+    """One pill. The visible text is the friendly label; the raw token is the tooltip."""
+    raw = _token(value) or _token(fallback)
     css = "ia-{0}-{1}".format(kind, _slug(value)) if _label_of(value) else "ia-plain"
+    text = label(_BADGE_KINDS.get(kind, kind), raw) or raw.replace("_", " ").title() or "-"
     sub_html = ' <span class="ia-badge-sub">{0}</span>'.format(_esc(sub)) if sub else ""
     return '<span class="ia-badge {css}" title="{title}">{label}{sub}</span>'.format(
-        css=css, title=_esc(label), label=_esc(label.replace("_", " ")), sub=sub_html
+        css=css, title=_esc(raw), label=_esc(text), sub=sub_html
     )
 
 
 def status_badge(status: Any) -> str:
     """Assessment outcome pill. Returns HTML - render with :func:`badges`."""
-    return _badge("status", status, fallback="NOT ASSESSED")
+    return _badge("status", status, fallback="NOT_ASSESSED")
 
 
 def risk_badge(risk_level: Any, score: Optional[float] = None) -> str:
     """Risk band pill, optionally carrying the 0-100 prototype score."""
     sub = "" if score is None else "{0:.0f}".format(float(score))
-    return _badge("risk", risk_level, sub=sub, fallback="NOT RATED")
+    return _badge("risk", risk_level, sub=sub, fallback="NOT_RATED")
 
 
 def confidence_badge(confidence: Any, score: Optional[float] = None) -> str:
@@ -155,8 +331,13 @@ def decision_badge(decision: Any) -> str:
 
 
 def mode_badge(mode: Any) -> str:
-    """Experimental condition (A / B / C) the assessment was produced under."""
-    return _badge("mode", mode, fallback="C_RAG_WORKFLOW")
+    """Pipeline configuration the assessment was produced under.
+
+    An absent or unrecognised mode reads "Mode unknown". It is never assumed to be the
+    full workflow: a row that does not say which condition produced it must not be
+    displayed as though it had the safety rails.
+    """
+    return _badge("mode", mode, fallback="UNKNOWN")
 
 
 def parse_badge(parse_status: Any) -> str:
@@ -301,11 +482,19 @@ def empty_state(
         return bool(
             st.button(
                 action_label,
-                key=action_key or "empty_action_{0}".format(abs(hash(title)) % 100000),
+                # A stable key: ``hash()`` is salted per process, so a key built from it
+                # would change between runs and Streamlit would lose the widget's state.
+                key=action_key or "empty_action_{0}".format(_key_slug(title + " " + message)),
                 type=action_type,
                 width="stretch",
             )
         )
+
+
+def _key_slug(text: str, limit: int = 64) -> str:
+    """A deterministic, widget-key-safe slug of arbitrary text."""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
+    return (slug[:limit].rstrip("-")) or "item"
 
 
 # ---- the AI provenance banner
@@ -323,9 +512,13 @@ def ai_disclaimer_banner(
     """
     extras: List[str] = []
     if mode:
-        extras.append("Mode {0}".format(_label_of(mode)))
+        extras.append(label("mode", mode))
     if provider:
-        extras.append("Provider {0}{1}".format(provider, "/" + model if model else ""))
+        extras.append(
+            "Answered by {0}{1}".format(
+                provider_display_name(provider), " / " + _label_of(model) if model else ""
+            )
+        )
     body = detail or ("" if compact else AI_DISCLAIMER_BODY)
     if extras:
         body = (body + "  " if body else "") + " · ".join(extras)
@@ -365,7 +558,17 @@ def provider_label(info: Mapping[str, Any]) -> str:
     return "AI Provider: {0}".format(provider_display_name(active))
 
 
-def provider_banner(info: Mapping[str, Any], compact: bool = False) -> None:
+#: The wording of the plain-language mock state. "Demo mode" is what an auditor reads;
+#: the sub-line says, in words, that no language model is involved, so the friendlier
+#: label cannot soften the claim.
+DEMO_MODE_LABEL = "DEMO MODE"
+DEMO_MODE_NOTE = (
+    "Offline rule-based assistant - not an AI language model. Results measure the "
+    "workflow, not model quality."
+)
+
+
+def provider_banner(info: Mapping[str, Any], compact: bool = False, plain: bool = False) -> None:
     """Say which model answered - loudly when the answer is "none", louder when it lies.
 
     Takes the mapping from ``app.frontend.data_access.provider_badge``:
@@ -381,6 +584,10 @@ def provider_banner(info: Mapping[str, Any], compact: bool = False) -> None:
       both provider names spelled out, and :data:`PROVIDER_MISMATCH_NOTE`. This is the
       case that silently invalidates an experiment, so it is the case that gets the loud
       treatment rather than a caption someone can miss.
+
+    ``plain=True`` renders the second state as "DEMO MODE" with :data:`DEMO_MODE_NOTE`
+    instead of the research wording. It changes nothing about the other two states: a
+    mismatch is red and spelled out whichever vocabulary the page asked for.
     """
     active = _label_of(info.get("active_provider"))
     configured = _label_of(info.get("configured_provider"))
@@ -400,7 +607,11 @@ def provider_banner(info: Mapping[str, Any], compact: bool = False) -> None:
     else:
         color = theme.ACCENT
 
-    line = [plain_badge(provider_label(info), color)]
+    if plain and is_mock and not mismatched:
+        line = [plain_badge(DEMO_MODE_LABEL, color)]
+        detail = DEMO_MODE_NOTE
+    else:
+        line = [plain_badge(provider_label(info), color)]
     if model and not is_mock:
         line.append(plain_badge(model))
 
@@ -447,6 +658,8 @@ def citation_card(
     index: Optional[int] = None,
     context_loader: Optional[Callable[[int], Mapping[str, Any]]] = None,
     expanded: bool = False,
+    expander_label: str = "",
+    highlight: bool = False,
 ) -> None:
     """One model citation, rendered so that it can actually be checked.
 
@@ -457,7 +670,9 @@ def citation_card(
 
     ``context_loader`` takes a ``chunk_id`` and returns the mapping produced by
     ``app.frontend.data_access.chunk_context``. Without one, the card falls back to the
-    chunk text carried on the citation row.
+    chunk text carried on the citation row. ``expander_label`` replaces the default
+    expander title; ``highlight`` marks the quoted text inside the stored chunk so the
+    reviewer's eye lands on the passage being claimed.
     """
     data = dict(citation)
     verdict = _label_of(data.get("verdict")) or "UNVERIFIED"
@@ -507,8 +722,15 @@ def citation_card(
     if chunk_id is None and not data.get("chunk_text"):
         return
 
-    title = "Show the source chunk in context" if context_loader else "Show the full source chunk"
-    with st.expander("{0}  -  chunk {1}".format(title, chunk_id if chunk_id is not None else "?"), expanded=expanded):
+    if expander_label:
+        title = expander_label
+    else:
+        title = "{0}  -  chunk {1}".format(
+            "Show the source chunk in context" if context_loader else "Show the full source chunk",
+            chunk_id if chunk_id is not None else "?",
+        )
+    marked = quote if highlight else ""
+    with st.expander(title, expanded=expanded):
         context: Mapping[str, Any] = {}
         if context_loader is not None and chunk_id is not None:
             try:
@@ -516,11 +738,11 @@ def citation_card(
             except Exception as exc:  # noqa: BLE001 - a viewer must not break the page
                 st.warning("Could not load the surrounding context: {0}".format(exc))
         if context.get("found"):
-            _render_chunk_context(context, int(chunk_id))
+            _render_chunk_context(context, int(chunk_id), highlight=marked)
         else:
             text = str(data.get("chunk_text") or "")
             if text:
-                _write('<div class="ia-chunk ia-chunk-focus">{0}</div>'.format(_esc(text)))
+                _write('<div class="ia-chunk ia-chunk-focus">{0}</div>'.format(_mark(text, marked)))
             else:
                 st.info(
                     "This citation does not resolve to a stored evidence chunk. That is "
@@ -529,7 +751,24 @@ def citation_card(
                 )
 
 
-def _render_chunk_context(context: Mapping[str, Any], focus_chunk_id: int) -> None:
+def _mark(text: str, needle: str) -> str:
+    """Escape ``text`` and wrap every case-insensitive occurrence of ``needle`` in <mark>.
+
+    Both strings are escaped *before* the search, so the only markup that can appear in
+    the result is the ``<mark>`` element added here - a quotation containing ``<`` cannot
+    open a tag, and a chunk containing one cannot either.
+    """
+    escaped = _esc(text)
+    target = _esc((needle or "").strip())
+    if not target:
+        return escaped
+    pattern = re.compile(re.escape(target), re.IGNORECASE)
+    return pattern.sub(lambda match: '<mark class="ia-mark">{0}</mark>'.format(match.group(0)), escaped)
+
+
+def _render_chunk_context(
+    context: Mapping[str, Any], focus_chunk_id: int, highlight: str = ""
+) -> None:
     """The cited chunk with its neighbours, the cited one marked."""
     kv_grid(
         {
@@ -541,13 +780,14 @@ def _render_chunk_context(context: Mapping[str, Any], focus_chunk_id: int) -> No
     )
     for chunk in context.get("chunks", []) or []:
         is_focus = int(chunk.get("chunk_id", chunk.get("id", -1)) or -1) == focus_chunk_id
-        marker = "cited chunk" if is_focus else "context"
+        marker = "cited passage" if is_focus else "surrounding text"
+        body = _mark(str(chunk.get("text", "")), highlight) if is_focus else _esc(chunk.get("text", ""))
         _write(
             '<div class="ia-eyebrow">{0} &middot; {1}</div>'
             '<div class="ia-chunk{focus}">{2}</div>'.format(
                 _esc(marker),
                 _esc(chunk.get("locator_text", "")),
-                _esc(chunk.get("text", "")),
+                body,
                 focus=" ia-chunk-focus" if is_focus else "",
             )
         )
@@ -572,7 +812,7 @@ def evidence_provenance_panel(evidence: Mapping[str, Any], show_hash: bool = Tru
     )
     badges(
         parse_badge(data.get("parse_status")),
-        plain_badge(_label_of(data.get("evidence_type")) or "OTHER"),
+        plain_badge(label("evidence_type", data.get("evidence_type")) or "Other"),
         plain_badge("synthetic", theme.AI_COLOR) if data.get("is_synthetic") else "",
         plain_badge("{0} chunks".format(stored)),
         plain_badge(
@@ -585,7 +825,7 @@ def evidence_provenance_panel(evidence: Mapping[str, Any], show_hash: bool = Tru
         "Uploaded": data.get("uploaded_at", ""),
         "Uploaded by": data.get("uploaded_by", ""),
         "Type / extension": "{0} / {1}".format(
-            _label_of(data.get("evidence_type")), data.get("extension", "")
+            label("evidence_type", data.get("evidence_type")), data.get("extension", "")
         ),
         "Size": "{0} KB".format(data.get("size_kb", round(float(data.get("size_bytes", 0) or 0) / 1024.0, 1))),
         "Pages / rows": "{0} / {1}".format(data.get("page_count", 0), data.get("row_count", 0)),
@@ -925,6 +1165,28 @@ def _fields_html(fields: Sequence[Any]) -> str:
 
 
 # ---- tables
+#: Columns that hold a timestamp but arrive from the API as ISO strings. Coerced to real
+#: datetimes before drawing so the ``DatetimeColumn`` formats in the default config apply
+#: instead of the raw string being shown.
+_TIMESTAMP_COLUMNS = frozenset(
+    {"created", "generated_at", "uploaded_at", "completed_at", "started_at"}
+)
+
+
+def _coerce_timestamps(frame: "pd.DataFrame") -> "pd.DataFrame":
+    for name in list(frame.columns):
+        text = str(name)
+        if not (text.endswith("_at") or text in _TIMESTAMP_COLUMNS):
+            continue
+        if frame[name].dtype != object:
+            continue
+        try:
+            frame[name] = pd.to_datetime(frame[name], errors="coerce", utc=True)
+        except Exception:  # noqa: BLE001 - an unparseable column is left as it was
+            continue
+    return frame
+
+
 def df_table(
     rows: Union[Sequence[Mapping[str, Any]], "pd.DataFrame"],
     columns: Optional[Sequence[str]] = None,
@@ -933,13 +1195,21 @@ def df_table(
     key: Optional[str] = None,
     empty_message: str = "Nothing to show.",
     hide_index: bool = True,
-) -> Optional["pd.DataFrame"]:
+    on_select: Any = None,
+    selection_mode: Any = None,
+) -> Any:
     """Render a list of dictionaries as a dataframe with consistent column handling.
 
     ``columns`` both selects and orders; a name that is not present is created empty
     rather than raising, so a page can list the columns it wants without first checking
-    which of them a given query produced. Returns the frame that was drawn (or ``None``
-    when there was nothing), so a caller can reuse it for a download button.
+    which of them a given query produced. Columns that hold ISO timestamps are coerced
+    to datetimes so the shared ``DatetimeColumn`` formats apply.
+
+    Returns the frame that was drawn (or ``None`` when there was nothing), so a caller
+    can reuse it for a download button. When ``on_select`` is given (``"rerun"`` or a
+    callback) it is passed through to ``st.dataframe`` together with
+    ``selection_mode`` and the dataframe's selection event is returned instead; read
+    ``event.selection.rows`` for the selected positional indices into the frame.
     """
     frame = rows if isinstance(rows, pd.DataFrame) else pd.DataFrame(list(rows or []))
     if frame.empty:
@@ -951,6 +1221,7 @@ def df_table(
             if name not in frame.columns:
                 frame[name] = None
         frame = frame[wanted]
+    frame = _coerce_timestamps(frame.copy())
 
     config: Dict[str, Any] = dict(_DEFAULT_COLUMN_CONFIG)
     config.update(dict(column_config or {}))
@@ -959,7 +1230,11 @@ def df_table(
     # ``height`` is only forwarded when set: Streamlit 1.50 rejects an explicit None,
     # and "let the table size itself" is the sane default for an unspecified height.
     extra: Dict[str, Any] = {"height": int(height)} if height else {}
-    st.dataframe(
+    if on_select is not None:
+        extra["on_select"] = on_select
+        if selection_mode is not None:
+            extra["selection_mode"] = selection_mode
+    result = st.dataframe(
         frame,
         width="stretch",
         hide_index=hide_index,
@@ -967,6 +1242,8 @@ def df_table(
         key=key,
         **extra
     )
+    if on_select is not None:
+        return result
     return frame
 
 
@@ -1020,13 +1297,252 @@ def download_row(
     st.download_button(label, data=data, file_name=file_name, mime=mime, key=key)
 
 
+# ---- navigation and workflow
+def _safe_page_link(page: str, label_text: str, icon: str = "", help_text: str = "") -> None:
+    """``st.page_link`` that degrades to a caption when the target page is not installed.
+
+    ``st.page_link`` raises when its target is not a registered page and the shell skips
+    page modules that are absent; a missing sibling must not take the caller down.
+    """
+    try:
+        st.page_link(page, label=label_text, icon=icon or None, help=help_text or None)
+    except Exception:  # noqa: BLE001 - navigation is a convenience, never a dependency
+        st.caption("{0} (that page is not installed in this build)".format(label_text))
+
+
+#: Material icons for the five workflow steps, keyed by ``step["key"]`` as
+#: ``data_access.project_stage`` names them.
+WORKFLOW_ICONS: Dict[str, str] = {
+    "scope": ":material/checklist:",
+    "evidence": ":material/inventory_2:",
+    "assess": ":material/fact_check:",
+    "review": ":material/rate_review:",
+    "report": ":material/summarize:",
+}
+
+WORKFLOW_COMPLETE_MESSAGE = "All steps complete - open the report"
+
+
+
+#: Public name for pages that need one guarded link outside next_steps().
+safe_page_link = _safe_page_link
+
+def _step_label(step: Mapping[str, Any], number: int) -> str:
+    name = str(step.get("label") or step.get("key") or "").strip()
+    if step.get("done"):
+        return "✓ {0} {1}".format(number, name)
+    if step.get("current"):
+        return "▸ {0} {1}".format(number, name)
+    return "{0} {1}".format(number, name)
+
+
+#: One-word names for the five steps, used where a five-column row has no room for
+#: "Record your decisions". The full label is always shown alongside as a caption.
+SHORT_STEP_LABELS: Dict[str, str] = {
+    "scope": "Controls",
+    "evidence": "Evidence",
+    "assess": "Assess",
+    "review": "Review",
+    "report": "Report",
+}
+
+
+def _short_step_label(step: Mapping[str, Any], position: int) -> str:
+    name = SHORT_STEP_LABELS.get(str(step.get("key") or ""), str(step.get("label") or ""))
+    if step.get("done"):
+        return "✓ {0} {1}".format(position, name)
+    if step.get("current"):
+        return "▸ {0} {1}".format(position, name)
+    return "{0} {1}".format(position, name)
+
+
+def workflow_strip(stage_info: Mapping[str, Any], compact: bool = False) -> None:
+    """The five-step audit path with the finished steps ticked and the next one marked.
+
+    Takes the mapping from ``app.frontend.data_access.project_stage``: ``stage`` plus an
+    ordered ``steps`` list of ``{key, label, page, count_text, done, current}``. Each step
+    is an ``st.page_link``, so the strip is also the navigation - an auditor who can see
+    what comes next can click it. ``compact=True`` renders only the "Next step" line with
+    one link, for pages that want a reminder rather than a map.
+
+    Nothing here runs anything: the strip points at the page where the auditor presses
+    the button.
+    """
+    info = dict(stage_info or {})
+    steps: List[Dict[str, Any]] = [dict(step) for step in (info.get("steps") or [])]
+    stage = str(info.get("stage") or "")
+    current: Optional[Tuple[int, Dict[str, Any]]] = None
+    for position, step in enumerate(steps, start=1):
+        if step.get("current"):
+            current = (position, step)
+            break
+
+    if stage == "reported" or (steps and current is None and all(s.get("done") for s in steps)):
+        report_step = next((s for s in steps if s.get("key") == "report"), steps[-1] if steps else {})
+        if compact:
+            _safe_page_link(
+                str(report_step.get("page") or "views/reports.py"),
+                WORKFLOW_COMPLETE_MESSAGE,
+                WORKFLOW_ICONS.get("report", ""),
+            )
+            return
+        _write('<div class="ia-eyebrow ia-next-step">{0}</div>'.format(_esc(WORKFLOW_COMPLETE_MESSAGE)))
+    elif current is not None:
+        number, step = current
+        headline = "Next step: {0}".format(_step_label(step, number).lstrip("▸ ").strip())
+        if compact:
+            count_text = str(step.get("count_text") or "").strip()
+            line = headline + (" · " + count_text if count_text else "")
+            _safe_page_link(str(step.get("page") or ""), line, WORKFLOW_ICONS.get(str(step.get("key")), ""))
+            return
+        _write('<div class="ia-eyebrow ia-next-step">{0}</div>'.format(_esc(headline)))
+    elif compact:
+        if steps:
+            _safe_page_link(str(steps[0].get("page") or ""), "Start: {0}".format(steps[0].get("label", "")))
+        return
+
+    if not steps:
+        st.caption("No workflow steps are available for this project.")
+        return
+
+    # The link carries a short name ("3 Assess") because st.page_link clips long labels
+    # in a five-column row; the full step name and its count go in the caption below.
+    columns = st.columns(len(steps), gap="small")
+    for column, (position, step) in zip(columns, enumerate(steps, start=1)):
+        with column:
+            _safe_page_link(
+                str(step.get("page") or ""),
+                _short_step_label(step, position),
+                WORKFLOW_ICONS.get(str(step.get("key")), ""),
+            )
+            parts = [str(step.get("label") or "").strip(), str(step.get("count_text") or "").strip()]
+            caption = " · ".join(part for part in parts if part)
+            if caption:
+                st.caption(caption)
+
+
+def next_steps(links: Sequence[Tuple[str, str, str]], primary_index: int = 0) -> None:
+    """A row of page links, the primary one in bold.
+
+    ``links`` is a list of ``(label, "views/x.py", icon)`` tuples. Nothing here runs an
+    action - these are places to go, and the auditor chooses to go there.
+    """
+    items = [tuple(item) for item in links if item]
+    if not items:
+        return
+    columns = st.columns(len(items), gap="small")
+    for position, (column, item) in enumerate(zip(columns, items)):
+        label_text = str(item[0])
+        page = str(item[1]) if len(item) > 1 else ""
+        icon = str(item[2]) if len(item) > 2 and item[2] else ""
+        if position == primary_index:
+            label_text = "**{0}**".format(label_text)
+        with column:
+            _safe_page_link(page, label_text, icon)
+
+
+def error_with_remedy(message: str, exc: Optional[BaseException] = None, retry_key: str = "") -> None:
+    """An error the auditor can act on: what went wrong, what to do, and the raw text.
+
+    ``str(exc)`` from :mod:`app.frontend.data_access` is already a plain sentence with a
+    next step (see ``_translate``); the untranslated text lives on ``exc.detail`` when
+    the facade kept it and is shown under "Technical details" rather than inline. With
+    ``retry_key`` a "Try again" button clears the read cache and reruns.
+    """
+    remedy = str(exc).strip() if exc is not None else ""
+    text = str(message or "").strip()
+    if remedy and remedy not in text:
+        text = (text + " " if text else "") + remedy
+    st.error(text or "Something went wrong.")
+
+    raw = ""
+    if exc is not None:
+        raw = str(getattr(exc, "detail", "") or "").strip()
+        if not raw or raw == remedy:
+            raw = "{0}: {1}".format(type(exc).__name__, remedy or "(no message)")
+    if raw:
+        with st.expander("Technical details", expanded=False):
+            st.code(raw, language="text")
+
+    if retry_key and st.button("Try again", key=retry_key):
+        from app.frontend import data_access
+
+        data_access.invalidate_cache()
+        st.rerun()
+
+
+def _accepts_keyword(fn: Callable[..., Any], name: str) -> bool:
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # builtins and mocks
+        return False
+
+
+def load_demo_control(
+    key: str, label: str = "Try the demo audit", help_text: str = ""
+) -> None:
+    """The "Try the demo audit" button: seed the demo project, then open Assessments.
+
+    Nothing happens until the button is pressed. On click the synthetic evidence is
+    generated and ingested with one progress line per file, the demo project becomes the
+    working project, and the auditor lands on the Assessments page with a message that
+    tells them the next thing to press. The demo project is never assessed here: running
+    the model is a separate, explicit click on that page.
+    """
+    if not st.button(label, key=key, type="primary", help=help_text or None, width="stretch"):
+        return
+
+    from app.frontend import data_access, state
+
+    summary: Optional[Dict[str, Any]] = None
+    with st.status("Loading the demo audit...", expanded=True) as status:
+
+        def progress(done: int, total: int, filename: str) -> None:
+            st.write("{0} of {1} - {2}".format(int(done), int(total), filename))
+
+        try:
+            if _accepts_keyword(data_access.load_demo_project, "progress"):
+                summary = dict(data_access.load_demo_project(progress=progress))
+            else:
+                summary = dict(data_access.load_demo_project())
+        except data_access.DataAccessError as exc:
+            status.update(label="The demo audit could not be loaded", state="error", expanded=True)
+            error_with_remedy("The demo audit could not be loaded.", exc)
+            return
+        loaded = len(summary.get("ingested", []) or []) + len(summary.get("skipped", []) or [])
+        for failure in summary.get("failures", []) or []:
+            st.warning(
+                "{0} was not loaded: {1}".format(failure.get("filename", "?"), failure.get("error", ""))
+            )
+        status.update(
+            label="Demo audit ready: {0} file(s) loaded".format(loaded), state="complete", expanded=False
+        )
+
+    project_id = summary.get("project_id")
+    if project_id is not None:
+        switch = getattr(state, "request_project_switch", None)
+        if callable(switch):
+            switch(int(project_id))
+        else:  # the shell contract is being implemented concurrently; fall back to today's API
+            state.set_current_project(int(project_id))
+    state.flash(
+        "Demo audit ready: {0} files loaded. Next: press Run assessment.".format(loaded), "success"
+    )
+    st.switch_page("views/assessments.py")
+
+
 __all__ = [
     "AI_DISCLAIMER",
     "AI_DISCLAIMER_BODY",
+    "DEMO_MODE_LABEL",
+    "DEMO_MODE_NOTE",
+    "LABELS",
     "MOCK_PROVIDER_NOTE",
     "PROVIDER_DISPLAY_NAMES",
     "PROVIDER_MISMATCH_NOTE",
     "RISK_MODEL_NOTE",
+    "WORKFLOW_COMPLETE_MESSAGE",
+    "WORKFLOW_ICONS",
     "ai_disclaimer_banner",
     "ai_vs_human_panel",
     "badges",
@@ -1036,13 +1552,17 @@ __all__ = [
     "df_table",
     "download_row",
     "empty_state",
+    "error_with_remedy",
     "escape",
     "evidence_provenance_panel",
     "four_way_panel",
     "kv_grid",
+    "label",
+    "load_demo_control",
     "metric_card",
     "metric_row",
     "mode_badge",
+    "next_steps",
     "note",
     "parse_badge",
     "plain_badge",
@@ -1054,4 +1574,6 @@ __all__ = [
     "status_badge",
     "sufficiency_badge",
     "verdict_badge",
+    "when",
+    "workflow_strip",
 ]

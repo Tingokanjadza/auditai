@@ -1,7 +1,10 @@
-"""The research dashboard: the synthetic suite, the A/B/C experiments and their metrics.
+"""The research bench: the synthetic suite, the A/B/C experiments and their metrics.
 
-This page exists to make a claim checkable, not to make one look good. Three rules are
-enforced by its layout rather than left to the reader's care.
+This page exists to make a claim checkable, not to make one look good. It is kept apart
+from the auditor's path on purpose: nothing here reads or writes the audit project chosen
+in the sidebar, and its research figures (accuracy, F1, hallucination rates) appear
+nowhere else in the console. Three rules are enforced by its layout rather than left to
+the reader's care.
 
 **No metric appears without its sample size.** Every tile carries ``n``, every table
 states what it was computed over, and the automatic caveats attached by
@@ -19,6 +22,10 @@ known answer, executed against whichever provider is configured - by default a
 deterministic rule-based stand-in. Accuracy here measures whether the pipeline reaches
 the planted conclusion on unambiguous evidence. It is not a measurement of language-model
 capability, and it does not generalise to real audit evidence.
+
+Widget keys on this page start with ``eval_``. They are deliberately *not* one of
+``state.PROJECT_SCOPED_KEY_PREFIXES``: the bench does not depend on the working audit
+project, so switching project must not reset a half-configured experiment.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ from __future__ import annotations
 import math
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import pandas as pd
 import streamlit as st
@@ -40,13 +47,32 @@ _PREVIEWABLE = {".csv", ".txt", ".md", ".json"}
 
 _PREVIEW_CHARS = 3000
 
+#: Session key holding ``{dataset_id: [generated file paths]}`` for the preview blocks.
+#: One fixed key rather than one key per dataset, so a regeneration can replace exactly
+#: the paths it superseded and nothing stale survives.
+_PREVIEW_KEY = "eval_preview_paths"
+
+#: The run picker's widget key. Fixed, with an ``on_change`` callback, so Streamlit keeps
+#: the widget stable across reruns; the value is reconciled with ``state.current_run_id``
+#: *before* the widget is instantiated (see :func:`_render_runs`).
+_RUN_PICK_KEY = "eval_open_run"
+
+#: The letter a condition is known by in the study write-up, for narrow table columns.
+_MODE_SHORT: Dict[str, str] = {
+    "A_RAW_LLM": "A",
+    "B_RAG": "B",
+    "C_RAG_WORKFLOW": "C",
+}
+
 _SUITE_NOTE = (
     "Six synthetic datasets, each authored so that the correct conclusion is known in "
     "advance. They describe no real organisation, system or person. DATASET-006 is an "
-    "addition beyond the five mandated cases: without a control that is genuinely "
-    "effective there is no true-negative class, and a system that answered "
+    "addition beyond the five cases required by the study brief: without a control that "
+    "is genuinely effective there is no true-negative class, and a system that answered "
     "'deficiency' unconditionally would score perfectly on the other five."
 )
+
+_RUNS_SHOWN = 50
 
 
 # ---- lazy access to the parts of the harness the facade does not expose
@@ -121,8 +147,55 @@ def _clean_frame(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
     return frame.where(pd.notnull(frame), None)
 
 
+def _mode_label(value: Any) -> str:
+    """The friendly name of an experimental condition; never the raw token."""
+    return components.label("mode", value) or components.label("mode", "UNKNOWN")
+
+
+def _mode_short(value: Any) -> str:
+    """'A', 'B' or 'C' for a narrow column; the full label for anything unexpected."""
+    token = str(getattr(value, "value", value) or "").strip().upper()
+    return _MODE_SHORT.get(token, _mode_label(value))
+
+
+def _status_label(value: Any) -> str:
+    return components.label("status", value)
+
+
+def _risk_label(value: Any) -> str:
+    return components.label("risk", value)
+
+
+def _run_status_label(value: Any) -> str:
+    # Run statuses ('completed', 'failed', ...) have no LABELS table; label() title-cases.
+    return components.label("run_status", value)
+
+
+def _run_option_label(row: Dict[str, Any], run_id: Any) -> str:
+    """'#7 · <name>' for a picker; the condition's label stands in for a blank name.
+
+    The page's default run name already starts with the condition's friendly label, so
+    the mode is not repeated in front of it.
+    """
+    mode_text = _mode_label(row.get("experiment_mode"))
+    name = str(row.get("name") or "").strip()
+    if not name:
+        return "#{0} · {1}".format(run_id, mode_text)
+    if name.startswith(mode_text):
+        return "#{0} · {1}".format(run_id, name)
+    return "#{0} · {1} · {2}".format(run_id, mode_text, name)
+
+
 # ---- the dataset catalogue
 def _render_datasets(datasets: List[Dict[str, Any]]) -> None:
+    if not datasets:
+        components.empty_state(
+            "The dataset catalogue is empty",
+            "The synthetic suite could not be read in this build, so there is nothing to "
+            "generate or preview.",
+        )
+        return
+
     components.section_header(
         "Synthetic evaluation suite",
         subtitle="{0} datasets with a known correct answer.".format(len(datasets)),
@@ -134,9 +207,9 @@ def _render_datasets(datasets: List[Dict[str, Any]]) -> None:
             "dataset_id": row.get("dataset_id", ""),
             "name": row.get("name", ""),
             "control_ref": row.get("control_ref", ""),
-            "expected_status": row.get("expected_status", ""),
-            "expected_risk": row.get("expected_risk", ""),
-            "mandated": bool(row.get("mandated")),
+            "expected_status": _status_label(row.get("expected_status")),
+            "expected_risk": _risk_label(row.get("expected_risk")),
+            "required": bool(row.get("mandated")),
             "files": len(row.get("file_names", []) or []),
             "exception_ratio": row.get("exception_ratio"),
             "markers": len(row.get("key_evidence_markers", []) or []),
@@ -151,16 +224,22 @@ def _render_datasets(datasets: List[Dict[str, Any]]) -> None:
             "control_ref",
             "expected_status",
             "expected_risk",
-            "mandated",
+            "required",
             "files",
             "exception_ratio",
             "markers",
         ],
         column_config={
             "dataset_id": st.column_config.TextColumn("Dataset", width="small"),
+            "name": st.column_config.TextColumn("Name", width="medium"),
+            "control_ref": st.column_config.TextColumn("Control", width="small"),
             "expected_status": st.column_config.TextColumn("Ground truth status", width="medium"),
             "expected_risk": st.column_config.TextColumn("Ground truth risk", width="small"),
-            "mandated": st.column_config.CheckboxColumn("Mandated case", width="small"),
+            "required": st.column_config.CheckboxColumn(
+                "Required by study brief",
+                width="small",
+                help="Ticked for the five cases the study brief mandates; DATASET-006 was added as the true-negative control.",
+            ),
             "files": st.column_config.NumberColumn("Files", width="small", format="%d"),
             "exception_ratio": st.column_config.NumberColumn(
                 "Exception rate", width="small", format="%.2f"
@@ -170,33 +249,25 @@ def _render_datasets(datasets: List[Dict[str, Any]]) -> None:
         key="eval_datasets",
     )
 
-    module = _datasets_module()
-    generate_col, note_col = st.columns([1, 3], gap="small")
-    with generate_col:
-        if st.button(
-            "Generate all dataset files",
-            key="eval_gen_all",
-            disabled=module is None,
-            help="Writes the synthetic evidence files to disk. Deterministic: same bytes every time.",
-        ):
-            _generate([row["dataset_id"] for row in datasets])
-    with note_col:
-        if module is None:
-            st.caption(
-                "File generation is available only when the console runs in-process; the "
-                "API exposes no endpoint that writes files to the server's filesystem."
-            )
-        else:
-            st.caption(
-                "Generation is seeded and idempotent, so regenerating produces byte-identical "
-                "files. The evaluation runner generates whatever it needs on its own - this "
-                "button exists so the files can be inspected before a run."
-            )
+    if _datasets_module() is None:
+        st.caption(
+            "File generation is available only when the console runs in-process; the "
+            "API exposes no endpoint that writes files to the server's filesystem. The "
+            "evaluation runner generates whatever it needs on its own."
+        )
+    else:
+        st.caption(
+            "Open a dataset below to generate its files and read them before a run. "
+            "Generation is seeded and idempotent, so regenerating produces byte-identical "
+            "files. The evaluation runner generates whatever it needs on its own."
+        )
 
     for row in datasets:
         with st.expander(
             "{0} · {1} → {2}".format(
-                row.get("dataset_id", ""), row.get("name", ""), row.get("expected_status", "")
+                row.get("dataset_id", ""),
+                row.get("name", ""),
+                _status_label(row.get("expected_status")) or "-",
             ),
             expanded=False,
         ):
@@ -204,13 +275,14 @@ def _render_datasets(datasets: List[Dict[str, Any]]) -> None:
 
 
 def _render_dataset_detail(dataset: Dict[str, Any]) -> None:
+    required = bool(dataset.get("mandated"))
     components.badges(
         components.plain_badge(str(dataset.get("dataset_id", ""))),
         components.status_badge(dataset.get("expected_status")),
         components.risk_badge(dataset.get("expected_risk")),
         components.plain_badge(
-            "mandated case" if dataset.get("mandated") else "added beyond the mandated five",
-            theme.ACCENT if dataset.get("mandated") else theme.VIOLET,
+            "required by study brief" if required else "added beyond the study brief",
+            theme.ACCENT if required else theme.VIOLET,
         ),
     )
     components.kv_grid(
@@ -240,7 +312,7 @@ def _render_dataset_detail(dataset: Dict[str, Any]) -> None:
             [
                 {
                     "filename": item.get("filename", ""),
-                    "evidence_type": item.get("evidence_type", ""),
+                    "evidence_type": components.label("evidence_type", item.get("evidence_type")),
                     "role": item.get("role", ""),
                     "description": item.get("description", ""),
                 }
@@ -248,6 +320,8 @@ def _render_dataset_detail(dataset: Dict[str, Any]) -> None:
             ],
             columns=["filename", "evidence_type", "role", "description"],
             column_config={
+                "filename": st.column_config.TextColumn("File", width="medium"),
+                "evidence_type": st.column_config.TextColumn("Evidence type", width="small"),
                 "role": st.column_config.TextColumn("Role", width="small"),
                 "description": st.column_config.TextColumn("Description", width="large"),
             },
@@ -262,46 +336,77 @@ def _render_dataset_detail(dataset: Dict[str, Any]) -> None:
             "literal substring match against the evidence actually put in front of the model."
         )
         for marker in markers:
-            st.markdown("- `{0}`".format(marker.replace("`", "'")))
+            st.markdown("- `{0}`".format(str(marker).replace("`", "'")))
 
-    module = _datasets_module()
-    if module is None:
+    if _datasets_module() is None:
         return
     dataset_id = str(dataset.get("dataset_id", ""))
-    if st.button("Generate and preview this dataset", key="eval_gen_{0}".format(dataset_id)):
-        _generate([dataset_id], preview=True)
+    if st.button(
+        "Generate and preview this dataset",
+        key="eval_gen_{0}".format(dataset_id),
+        help="Writes this dataset's synthetic evidence files to disk and shows them below. Deterministic: same bytes every time.",
+    ):
+        _generate(dataset_id)
 
-    for path_text in st.session_state.get("eval_generated_{0}".format(dataset_id), []) or []:
-        _render_file_preview(Path(path_text))
+    paths = _preview_paths(dataset_id)
+    if paths:
+        _render_file_previews([Path(text) for text in paths])
 
 
-def _generate(dataset_ids: Sequence[str], preview: bool = False) -> None:
-    """Write the synthetic files to disk and remember the paths for previewing."""
+def _preview_paths(dataset_id: str) -> List[str]:
+    previews = st.session_state.get(_PREVIEW_KEY) or {}
+    return list(previews.get(dataset_id) or [])
+
+
+def _remember_preview(dataset_id: str, paths: Sequence[str]) -> None:
+    """Replace the remembered preview paths for one dataset (clearing the old ones)."""
+    previews = dict(st.session_state.get(_PREVIEW_KEY) or {})
+    previews[dataset_id] = list(paths)
+    st.session_state[_PREVIEW_KEY] = previews
+
+
+def _generate(dataset_id: str) -> None:
+    """Write one dataset's synthetic files to disk and remember the paths for previewing."""
     module = _datasets_module()
     if module is None:
         st.error("The dataset generator is not available in this build.")
         return
-    written: List[str] = []
     with st.spinner("Generating synthetic evidence files…"):
-        for dataset_id in dataset_ids:
-            try:
-                paths = module.generate_dataset(dataset_id)
-            except Exception as exc:  # noqa: BLE001 - one bad dataset must not stop the rest
-                st.error("{0} could not be generated: {1}".format(dataset_id, exc))
-                continue
-            texts = [str(path) for path in paths]
-            written.extend(texts)
-            if preview:
-                st.session_state["eval_generated_{0}".format(dataset_id)] = texts
-    if written:
-        st.success(
-            "Wrote {0} file(s). All of it is fabricated research data and represents no "
-            "real organisation.".format(len(written))
-        )
+        try:
+            paths = module.generate_dataset(dataset_id)
+        except Exception as exc:  # noqa: BLE001 - report, do not take the page down
+            st.error("{0} could not be generated: {1}".format(dataset_id, exc))
+            return
+    texts = [str(path) for path in paths]
+    _remember_preview(dataset_id, texts)
+    st.success(
+        "Wrote {0} file(s) for {1}. All of it is fabricated research data and represents "
+        "no real organisation. Next: read the previews below, then run the experiment "
+        "from the 'Run and results' tab.".format(len(texts), dataset_id)
+    )
+
+
+def _render_file_previews(paths: Sequence[Path]) -> None:
+    """Show the generated files so the planted condition can be checked by eye.
+
+    One tab per file rather than one expander per file: this block lives inside the
+    dataset's expander and Streamlit does not allow expanders to nest.
+    """
+    if not paths:
+        return
+    st.markdown("**Generated files**")
+    names: List[str] = []
+    for index, path in enumerate(paths, start=1):
+        name = path.name or "file {0}".format(index)
+        if name in names:
+            name = "{0} ({1})".format(name, index)
+        names.append(name)
+    for tab, path in zip(st.tabs(names), paths):
+        with tab:
+            _render_file_preview(path)
 
 
 def _render_file_preview(path: Path) -> None:
-    """Show a generated file so the planted condition can be checked by eye."""
     try:
         size = path.stat().st_size
     except OSError as exc:
@@ -320,12 +425,10 @@ def _render_file_preview(path: Path) -> None:
     except OSError as exc:
         st.caption("{0}: not readable ({1})".format(path.name, exc))
         return
-    with st.expander("{0} - {1:.1f} KB".format(path.name, size / 1024.0), expanded=False):
-        st.code(text[:_PREVIEW_CHARS], language=None)
-        if len(text) > _PREVIEW_CHARS:
-            st.caption(
-                "First {0} of {1} characters.".format(_PREVIEW_CHARS, len(text))
-            )
+    st.caption("{0} - {1:.1f} KB".format(path.name, size / 1024.0))
+    st.code(text[:_PREVIEW_CHARS], language=None)
+    if len(text) > _PREVIEW_CHARS:
+        st.caption("First {0} of {1} characters.".format(_PREVIEW_CHARS, len(text)))
 
 
 # ---- running experiments
@@ -333,7 +436,7 @@ def _render_runner(datasets: List[Dict[str, Any]]) -> None:
     availability = data_access.evaluation_available()
     components.section_header(
         "Run an experiment",
-        subtitle="Each run creates an isolated project per dataset, ingests its files and assesses the control.",
+        subtitle="Each run creates an isolated research project per dataset, ingests its files and assesses the control.",
     )
     if not availability.get("available"):
         st.warning(
@@ -342,11 +445,12 @@ def _render_runner(datasets: List[Dict[str, Any]]) -> None:
             )
         )
         return
+    if not datasets:
+        st.caption("No datasets are available, so there is nothing to run.")
+        return
 
     ids = [row["dataset_id"] for row in datasets]
-    modes = data_access.experiment_modes()
-    mode_values = [item["value"] for item in modes]
-    mode_labels = {item["value"]: item["label"] for item in modes}
+    mode_values = [item["value"] for item in data_access.experiment_modes()]
 
     left, right = st.columns([2, 2], gap="medium")
     with left:
@@ -354,7 +458,7 @@ def _render_runner(datasets: List[Dict[str, Any]]) -> None:
             "Experimental conditions",
             options=mode_values,
             default=mode_values,
-            format_func=lambda value: mode_labels.get(value, value),
+            format_func=_mode_label,
             key="eval_modes",
             help="One run is recorded per condition, so they can be compared row by row.",
         )
@@ -368,14 +472,14 @@ def _render_runner(datasets: List[Dict[str, Any]]) -> None:
     run_name = st.text_input(
         "Run name (optional)",
         key="eval_run_name",
-        placeholder="e.g. baseline-2024-06-30",
+        placeholder="e.g. baseline-2026-09-30",
         help="Stored on the run so a figure in the write-up can be traced back to it.",
     )
 
     st.caption(
         "Runs execute synchronously in this process. Against the offline provider the "
         "whole suite takes seconds; against a hosted model it takes minutes, and the "
-        "browser must stay open. The evaluation projects are kept afterwards so the "
+        "browser must stay open. The research projects are kept afterwards so the "
         "prompts and responses behind every metric remain auditable."
     )
 
@@ -398,35 +502,48 @@ def _run_experiments(modes: Sequence[str], dataset_ids: Sequence[str], run_name:
     for index, mode in enumerate(modes, start=1):
         line.caption(
             "Running {0} ({1} of {2}) - {3:.0f}s elapsed".format(
-                mode, index, len(modes), time.perf_counter() - started
+                _mode_label(mode), index, len(modes), time.perf_counter() - started
             )
+        )
+        # A blank name would make the runner title the run by its raw mode token; the
+        # page names it by the condition's friendly label instead.
+        name = (
+            "{0} [{1}]".format(run_name.strip(), _mode_short(mode))
+            if run_name.strip()
+            else "{0} over {1} dataset(s)".format(_mode_label(mode), len(dataset_ids))
         )
         try:
             run = data_access.run_evaluation(
                 mode=mode,
                 dataset_ids=list(dataset_ids),
-                run_name="{0} [{1}]".format(run_name, mode) if run_name else "",
+                run_name=name,
             )
-            completed.append("{0} → run #{1} ({2})".format(mode, run.get("id"), run.get("status", "")))
-            state.set_current_run(int(run.get("id")) if run.get("id") is not None else None)
+            completed.append(
+                "{0} → run #{1} ({2})".format(
+                    _mode_label(mode), run.get("id"), _run_status_label(run.get("status")) or "recorded"
+                )
+            )
+            if run.get("id") is not None:
+                state.set_current_run(int(run.get("id")))
         except data_access.DataAccessError as exc:
-            failed.append("{0}: {1}".format(mode, exc))
+            failed.append("{0}: {1}".format(_mode_label(mode), exc))
         progress.progress(index / float(len(modes)))
 
     progress.empty()
     line.empty()
     elapsed = time.perf_counter() - started
-    for message in completed:
-        state.flash(message, "success")
-    for message in failed:
-        state.flash(message, "error")
-    state.flash(
-        "{0} condition(s) finished in {1:.1f}s. Progress is reported per condition: a run "
-        "is one blocking call and cannot report per-dataset progress from inside it.".format(
-            len(completed), elapsed
-        ),
-        "info",
-    )
+    if completed:
+        state.flash(
+            "{0} condition(s) finished in {1:.1f}s: {2}. Next: the latest run is open "
+            "below - read its caveats first, then compare the conditions in the "
+            "'Compare runs' tab.".format(len(completed), elapsed, "; ".join(completed)),
+            "success",
+        )
+    if failed:
+        state.flash(
+            "{0} condition(s) failed: {1}".format(len(failed), "; ".join(failed)),
+            "error",
+        )
     st.rerun()
 
 
@@ -514,7 +631,7 @@ def _render_per_class(metrics: Dict[str, Any]) -> None:
     )
     rows = [
         {
-            "status": label,
+            "status": _status_label(token) or str(token),
             "precision": cell.get("precision"),
             "recall": cell.get("recall"),
             "f1": cell.get("f1"),
@@ -523,7 +640,7 @@ def _render_per_class(metrics: Dict[str, Any]) -> None:
             "false_positives": cell.get("false_positives"),
             "false_negatives": cell.get("false_negatives"),
         }
-        for label, cell in per_class.items()
+        for token, cell in per_class.items()
     ]
     components.df_table(
         rows,
@@ -543,6 +660,9 @@ def _render_per_class(metrics: Dict[str, Any]) -> None:
             "recall": st.column_config.NumberColumn("Recall", format="%.2f", width="small"),
             "f1": st.column_config.NumberColumn("F1", format="%.2f", width="small"),
             "support": st.column_config.NumberColumn("Support (n)", format="%d", width="small"),
+            "true_positives": st.column_config.NumberColumn("True positives", format="%d", width="small"),
+            "false_positives": st.column_config.NumberColumn("False positives", format="%d", width="small"),
+            "false_negatives": st.column_config.NumberColumn("False negatives", format="%d", width="small"),
         },
         key="eval_per_class",
     )
@@ -555,9 +675,12 @@ def _render_confusion(metrics: Dict[str, Any]) -> None:
         return
     import plotly.graph_objects as go
 
-    labels = list(matrix.keys())
-    predicted_labels = sorted({key for row in matrix.values() for key in row})
-    values = [[int(matrix[expected].get(predicted, 0)) for predicted in predicted_labels] for expected in labels]
+    expected_tokens = list(matrix.keys())
+    predicted_tokens = sorted({key for row in matrix.values() for key in row})
+    values = [
+        [int(matrix[expected].get(predicted, 0)) for predicted in predicted_tokens]
+        for expected in expected_tokens
+    ]
 
     components.section_header(
         "Confusion matrix",
@@ -566,8 +689,8 @@ def _render_confusion(metrics: Dict[str, Any]) -> None:
     figure = go.Figure(
         data=go.Heatmap(
             z=values,
-            x=predicted_labels,
-            y=labels,
+            x=[_status_label(token) or str(token) for token in predicted_tokens],
+            y=[_status_label(token) or str(token) for token in expected_tokens],
             colorscale=[[0.0, theme.SURFACE_ALT], [1.0, theme.ACCENT]],
             showscale=False,
             text=values,
@@ -578,7 +701,7 @@ def _render_confusion(metrics: Dict[str, Any]) -> None:
     # The axes are styled through update_*axes rather than through plotly_layout
     # overrides, because an "xaxis" override would replace the theme's axis block
     # wholesale and take the gridline colours with it.
-    theme.style_figure(figure, height=90 + 60 * max(1, len(labels)))
+    theme.style_figure(figure, height=90 + 60 * max(1, len(expected_tokens)))
     # theme.plotly_layout supplies a title font but no title text, and plotly.js renders
     # a text-less title object as the literal string "undefined". The chart is titled by
     # the section header above it, so the title is cleared explicitly.
@@ -592,22 +715,24 @@ def _render_confusion(metrics: Dict[str, Any]) -> None:
 
 
 def _render_deficiency(metrics: Dict[str, Any]) -> None:
+    inclusive = dict(metrics.get("deficiency_detection") or {})
+    exclusive = dict(metrics.get("deficiency_detection_excluding_insufficient") or {})
+    if not inclusive and not exclusive:
+        return
+    insufficient = _status_label("INSUFFICIENT_EVIDENCE")
     components.section_header(
         "Deficiency detection",
         subtitle="The same predictions read as a binary question: did the system raise a deficiency?",
     )
     both = [
-        ("INSUFFICIENT_EVIDENCE counted as 'no deficiency'", metrics.get("deficiency_detection") or {}),
-        (
-            "INSUFFICIENT_EVIDENCE excluded as an abstention",
-            metrics.get("deficiency_detection_excluding_insufficient") or {},
-        ),
+        ("'{0}' counted as 'no deficiency'".format(insufficient), inclusive),
+        ("'{0}' excluded as an abstention".format(insufficient), exclusive),
     ]
     rows = []
-    for label, block in both:
+    for framing, block in both:
         rows.append(
             {
-                "framing": label,
+                "framing": framing,
                 "n": block.get("n", 0),
                 "precision": block.get("precision"),
                 "recall": block.get("recall"),
@@ -627,13 +752,28 @@ def _render_deficiency(metrics: Dict[str, Any]) -> None:
             "n": st.column_config.NumberColumn("n", width="small", format="%d"),
             "precision": st.column_config.NumberColumn("Precision", format="%.2f", width="small"),
             "recall": st.column_config.NumberColumn("Recall", format="%.2f", width="small"),
-            "fpr": st.column_config.NumberColumn("FPR", format="%.2f", width="small"),
-            "fnr": st.column_config.NumberColumn("FNR", format="%.2f", width="small"),
+            "fpr": st.column_config.NumberColumn(
+                "FPR",
+                format="%.2f",
+                width="small",
+                help="False positive rate: effective controls the system flagged as deficient, as a share of all effective controls.",
+            ),
+            "fnr": st.column_config.NumberColumn(
+                "FNR",
+                format="%.2f",
+                width="small",
+                help="False negative rate: deficient controls the system did not flag, as a share of all deficient controls.",
+            ),
+            "tp": st.column_config.NumberColumn("TP", width="small", format="%d", help="True positives"),
+            "fp": st.column_config.NumberColumn("FP", width="small", format="%d", help="False positives"),
+            "tn": st.column_config.NumberColumn("TN", width="small", format="%d", help="True negatives"),
+            "fn": st.column_config.NumberColumn("FN", width="small", format="%d", help="False negatives"),
         },
         key="eval_deficiency",
     )
-    definition = str((metrics.get("deficiency_detection") or {}).get("definition", ""))
-    components.note(definition)
+    definition = str(inclusive.get("definition") or exclusive.get("definition") or "")
+    if definition:
+        components.note(definition)
     components.note(
         "Report both framings. The first depresses recall by counting an honest "
         "'I cannot tell' as a missed deficiency; the second removes those rows entirely."
@@ -660,7 +800,7 @@ def _render_evidence_metrics(metrics: Dict[str, Any]) -> None:
             {
                 "label": "Grounding rate",
                 "value": _pct(evidence.get("grounding_rate")),
-                "caption": "verified / all citations; PARTIAL counts as 0. n = {0} citation(s).".format(
+                "caption": "verified / all citations; a partly matched quote counts as 0. n = {0} citation(s).".format(
                     evidence.get("citations_total", 0)
                 ),
             },
@@ -691,9 +831,10 @@ def _render_evidence_metrics(metrics: Dict[str, Any]) -> None:
             {
                 "label": "Missing-evidence detection",
                 "value": _pct(evidence.get("missing_evidence_detection_rate")),
-                "caption": "{0} of {1} ground-truth INSUFFICIENT case(s).".format(
+                "caption": "{0} of {1} ground-truth '{2}' case(s).".format(
                     evidence.get("missing_evidence_detected", 0),
                     evidence.get("missing_evidence_cases", 0),
+                    _status_label("INSUFFICIENT_EVIDENCE"),
                 ),
                 "color": theme.status_color("INSUFFICIENT_EVIDENCE"),
             },
@@ -769,11 +910,11 @@ def _render_results_table(run: Dict[str, Any]) -> None:
         {
             "dataset_id": row.get("dataset_id", ""),
             "control_ref": row.get("control_ref", ""),
-            "expected_status": row.get("expected_status", ""),
-            "predicted_status": row.get("predicted_status", ""),
+            "expected_status": _status_label(row.get("expected_status")),
+            "predicted_status": _status_label(row.get("predicted_status")),
             "status_correct": bool(row.get("status_correct")),
-            "expected_risk": row.get("expected_risk", ""),
-            "predicted_risk": row.get("predicted_risk", ""),
+            "expected_risk": _risk_label(row.get("expected_risk")),
+            "predicted_risk": _risk_label(row.get("predicted_risk")),
             "citation_count": int(row.get("citation_count", 0) or 0),
             "verified_citation_count": int(row.get("verified_citation_count", 0) or 0),
             "fabricated_citation_count": int(row.get("fabricated_citation_count", 0) or 0),
@@ -792,10 +933,21 @@ def _render_results_table(run: Dict[str, Any]) -> None:
         columns=list(frame.columns),
         column_config={
             "dataset_id": st.column_config.TextColumn("Dataset", width="small"),
+            "control_ref": st.column_config.TextColumn("Control", width="small"),
             "expected_status": st.column_config.TextColumn("Expected", width="medium"),
             "predicted_status": st.column_config.TextColumn("Predicted", width="medium"),
             "status_correct": st.column_config.CheckboxColumn("Correct", width="small"),
+            "expected_risk": st.column_config.TextColumn("Expected risk", width="small"),
+            "predicted_risk": st.column_config.TextColumn("Predicted risk", width="small"),
+            "citation_count": st.column_config.NumberColumn("Citations", width="small", format="%d"),
+            "verified_citation_count": st.column_config.NumberColumn("Verified", width="small", format="%d"),
+            "fabricated_citation_count": st.column_config.NumberColumn("Fabricated", width="small", format="%d"),
+            "unsupported_claim_count": st.column_config.NumberColumn("Unsupported claims", width="small", format="%d"),
             "declared_missing_evidence": st.column_config.CheckboxColumn("Named missing evidence", width="small"),
+            "expected_evidence_hits": st.column_config.NumberColumn("Markers hit", width="small", format="%d"),
+            "expected_evidence_total": st.column_config.NumberColumn("Markers total", width="small", format="%d"),
+            "latency_ms": st.column_config.NumberColumn("Latency (ms)", width="small", format="%d"),
+            "error": st.column_config.TextColumn("Error", width="medium"),
         },
         key="eval_results",
     )
@@ -812,7 +964,7 @@ def _render_run_detail(run_id: int) -> None:
     try:
         run = data_access.get_evaluation_run(run_id)
     except data_access.DataAccessError as exc:
-        st.error("Could not load run {0}: {1}".format(run_id, exc))
+        components.error_with_remedy("Could not load run {0}.".format(run_id), exc)
         return
     if run is None:
         st.warning("Run {0} no longer exists.".format(run_id))
@@ -824,28 +976,32 @@ def _render_run_detail(run_id: int) -> None:
     components.section_header(
         "Run #{0} - {1}".format(run.get("id"), run.get("name") or "(unnamed)"),
         subtitle="{0} · {1} · {2}".format(
-            run.get("mode_label", run.get("experiment_mode", "")),
-            run.get("status", ""),
-            run.get("started_at", ""),
+            _mode_label(run.get("experiment_mode")),
+            _run_status_label(run.get("status")) or "status unknown",
+            components.when(run.get("started_at")) or "start time unknown",
         ),
         eyebrow="Experiment result",
     )
+    provider = str(run.get("llm_provider", "") or "")
     components.badges(
         components.mode_badge(run.get("experiment_mode")),
         components.plain_badge("{0} result(s)".format(run.get("result_count", 0))),
         components.plain_badge(
-            "{0} / {1}".format(run.get("llm_provider", ""), run.get("llm_model", "")),
-            theme.AI_COLOR if str(run.get("llm_provider", "")) == "mock" else theme.ACCENT,
+            "{0} / {1}".format(
+                components.provider_display_name(provider) or provider or "provider unknown",
+                run.get("llm_model", "") or "model unknown",
+            ),
+            theme.AI_COLOR if provider.lower() == "mock" else theme.ACCENT,
         ),
         components.plain_badge("{0:.1f}s".format(float(run.get("duration_seconds", 0.0) or 0.0))),
     )
-    if str(run.get("llm_provider", "")).lower() == "mock":
+    if provider.lower() == "mock":
         st.info(
-            "This run was executed against the deterministic offline provider. "
+            "DEMO MODE - this run was executed against the deterministic offline provider. "
             + components.MOCK_PROVIDER_NOTE
         )
     if llm_config.get("fell_back_to_mock"):
-        st.warning(
+        st.error(
             "A remote provider was configured but unavailable, so the offline stand-in "
             "answered. Do not report this run as a model result."
         )
@@ -865,21 +1021,133 @@ def _render_run_detail(run_id: int) -> None:
         st.code(data_access.to_json(metrics), language="json")
 
 
-# ---- comparison across runs
-def _render_comparison(runs: List[Dict[str, Any]]) -> None:
-    if len(runs) < 2:
-        st.caption(
-            "Two or more recorded runs are needed for a comparison. Run the conditions "
-            "you want to compare from the panel above."
+# ---- recorded runs and the run picker
+def _on_run_pick() -> None:
+    """Selectbox callback: the picked run becomes the current one before the rerun."""
+    value = st.session_state.get(_RUN_PICK_KEY)
+    state.set_current_run(int(value) if value is not None else None)
+
+
+def _run_picker_label(by_id: Dict[int, Dict[str, Any]], value: Any) -> str:
+    """``format_func`` for the run picker; tolerates a value that is not a run id.
+
+    Streamlit hands the picker its own option (an int). The testing harness hands the
+    already-formatted string back instead, and a formatter that raised on it would take
+    the whole page down for the sake of a label.
+    """
+    try:
+        run_id = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return _run_option_label(by_id.get(run_id, {}), run_id)
+
+
+def _render_runs(runs: List[Dict[str, Any]]) -> None:
+    components.section_header(
+        "Recorded runs",
+        subtitle="The latest {0} runs stored in this database ({1} shown). Every run keeps its scored results and the configuration that produced them.".format(
+            _RUNS_SHOWN, len(runs)
+        ),
+    )
+    if not runs:
+        components.empty_state(
+            "No experiment has been run yet",
+            "Next: pick the conditions and datasets above and press the Run button. Each "
+            "run persists its scored results and configuration, so a figure can always be "
+            "traced back.",
         )
         return
 
-    labels = {
-        int(row["id"]): "#{0} · {1} · {2}".format(
-            row["id"], row.get("experiment_mode", ""), row.get("name") or "unnamed"
-        )
+    table = [
+        {
+            "id": row.get("id"),
+            "name": row.get("name", ""),
+            "condition": _mode_short(row.get("experiment_mode")),
+            "status": _run_status_label(row.get("status")),
+            "n": (row.get("metrics") or {}).get("n_scored", row.get("result_count", 0)),
+            "accuracy": ((row.get("metrics") or {}).get("classification") or {}).get("accuracy"),
+            "llm_model": row.get("llm_model", ""),
+            "duration_seconds": float(row.get("duration_seconds", 0.0) or 0.0),
+            "started_at": row.get("started_at"),
+        }
         for row in runs
-    }
+    ]
+    components.df_table(
+        table,
+        columns=[
+            "id",
+            "name",
+            "condition",
+            "status",
+            "n",
+            "accuracy",
+            "llm_model",
+            "duration_seconds",
+            "started_at",
+        ],
+        column_config={
+            "id": st.column_config.NumberColumn("Run", width="small", format="%d"),
+            "name": st.column_config.TextColumn("Name", width="medium"),
+            "condition": st.column_config.TextColumn(
+                "Condition",
+                width="small",
+                help="A = {0}; B = {1}; C = {2}.".format(
+                    _mode_label("A_RAW_LLM"), _mode_label("B_RAG"), _mode_label("C_RAG_WORKFLOW")
+                ),
+            ),
+            "status": st.column_config.TextColumn("Status", width="small"),
+            "n": st.column_config.NumberColumn("n scored", width="small", format="%d"),
+            "accuracy": st.column_config.NumberColumn("Accuracy", width="small", format="%.2f"),
+            "llm_model": st.column_config.TextColumn("Model", width="medium"),
+            "duration_seconds": st.column_config.NumberColumn("Seconds", width="small", format="%.1f"),
+            "started_at": st.column_config.DatetimeColumn("Started", width="medium", format="DD MMM YYYY HH:mm"),
+        },
+        key="eval_runs",
+    )
+
+    ids = [int(row["id"]) for row in runs if row.get("id") is not None]
+    if not ids:
+        return
+    by_id = {int(row["id"]): row for row in runs if row.get("id") is not None}
+
+    current: Optional[int] = state.current_run_id()
+    if current not in ids:
+        current = ids[0]
+        state.set_current_run(current)
+    # Reconcile the widget with the current run *before* the widget exists in this run:
+    # a run that has just finished (or a stale id after a delete) must be what opens.
+    # Writing the key after st.selectbox has been instantiated would raise.
+    if st.session_state.get(_RUN_PICK_KEY) != current:
+        st.session_state[_RUN_PICK_KEY] = current
+
+    st.selectbox(
+        "Open a run",
+        options=ids,
+        format_func=lambda value: _run_picker_label(by_id, value),
+        key=_RUN_PICK_KEY,
+        on_change=_on_run_pick,
+        help="The newest run opens by default. Read its caveats before its numbers.",
+    )
+    st.markdown("---")
+    _render_run_detail(int(current))
+
+
+# ---- comparison across runs
+def _render_comparison(runs: List[Dict[str, Any]]) -> None:
+    components.section_header(
+        "Compare conditions",
+        subtitle="One row per run - the A/B/C table for the write-up.",
+    )
+    if len(runs) < 2:
+        components.empty_state(
+            "Two or more recorded runs are needed for a comparison",
+            "Next: run the conditions you want to compare from the 'Run and results' tab, "
+            "then come back here.",
+        )
+        return
+
+    by_id = {int(row["id"]): row for row in runs if row.get("id") is not None}
+    labels = {run_id: _run_option_label(row, run_id) for run_id, row in by_id.items()}
     default = list(labels)[:3]
     chosen = st.multiselect(
         "Runs to compare",
@@ -895,20 +1163,50 @@ def _render_comparison(runs: List[Dict[str, Any]]) -> None:
     try:
         rows = data_access.compare_evaluation_runs(chosen)
     except data_access.DataAccessError as exc:
-        st.error("Could not build the comparison: {0}".format(exc))
+        components.error_with_remedy("Could not build the comparison.", exc)
         return
     if not rows:
         st.caption("Nothing to compare.")
         return
 
-    frame = _clean_frame(rows)
+    # Name the condition on every row. The runner keys its frame by mode but drops that
+    # index on the way to records; the stored-metrics fallback carries a raw 'mode'.
+    named: List[Dict[str, Any]] = []
+    for row in rows:
+        record = dict(row)
+        raw_mode = record.pop("mode", None)
+        try:
+            run_row = by_id.get(int(record.get("run_id")))
+        except (TypeError, ValueError):
+            run_row = None
+        mode_value = (run_row or {}).get("experiment_mode", raw_mode)
+        ordered: Dict[str, Any] = {"run_id": record.pop("run_id", None), "condition": _mode_label(mode_value)}
+        for key in ("run_name", "name", "status"):
+            if key in record:
+                ordered[key] = record.pop(key)
+        if "status" in ordered:
+            ordered["status"] = _run_status_label(ordered["status"])
+        ordered.update(record)
+        named.append(ordered)
+
+    frame = _clean_frame(named)
     display = frame.copy()
     for column in display.columns:
-        if column in ("run_id", "n", "caveats"):
+        if column in ("run_id", "n", "caveats", "results"):
             continue
         if pd.api.types.is_float_dtype(display[column]):
             display[column] = display[column].map(lambda value: _num(value, 3))
-    components.df_table(display, columns=list(display.columns), key="eval_compare")
+    components.df_table(
+        display,
+        columns=list(display.columns),
+        column_config={
+            "run_id": st.column_config.NumberColumn("Run", width="small", format="%d"),
+            "condition": st.column_config.TextColumn("Condition", width="large"),
+            "fpr": st.column_config.TextColumn("FPR", help="False positive rate.", width="small"),
+            "fnr": st.column_config.TextColumn("FNR", help="False negative rate.", width="small"),
+        },
+        key="eval_compare",
+    )
     sample = rows[0].get("n")
     per_row_points = 100.0 / float(sample) if sample else None
     components.note(
@@ -934,14 +1232,14 @@ def _render_comparison(runs: List[Dict[str, Any]]) -> None:
 def _render_agreement() -> None:
     components.section_header(
         "Human/AI agreement",
-        subtitle="Measured over the auditor decisions recorded in this database, not over experiment runs.",
+        subtitle="Measured over every auditor decision recorded in this database, not over experiment runs.",
     )
     metrics_module = _metrics_module()
     try:
         reviews = data_access.list_reviews()
         assessments = data_access.list_assessments(limit=None)
     except data_access.DataAccessError as exc:
-        st.error("Could not read the reviews: {0}".format(exc))
+        components.error_with_remedy("Could not read the reviews.", exc)
         return
 
     by_id = {int(row["id"]): row for row in assessments}
@@ -961,10 +1259,11 @@ def _render_agreement() -> None:
         )
 
     if not pairs:
-        st.caption(
-            "No auditor decision has been recorded yet, so there is nothing to compare. "
-            "The evaluation harness has no human in it: this block is the only place the "
-            "study's human/AI concordance can come from."
+        components.empty_state(
+            "No auditor decision has been recorded yet",
+            "There is nothing to compare. The evaluation harness has no human in it: this "
+            "block is the only place the study's human/AI concordance can come from. Next: "
+            "record decisions in an audit project's Human review page.",
         )
         return
     if metrics_module is None:
@@ -978,7 +1277,7 @@ def _render_agreement() -> None:
             {
                 "label": "Completed reviews",
                 "value": completed,
-                "caption": "{0} review row(s) in total; PENDING excluded.".format(
+                "caption": "{0} review row(s) in total; those still awaiting a decision are excluded.".format(
                     agreement.get("n_reviews", 0)
                 ),
             },
@@ -1006,7 +1305,7 @@ def _render_agreement() -> None:
             {
                 "label": "Modification rate",
                 "value": _pct(agreement.get("modification_rate")),
-                "caption": "Decisions recorded as MODIFIED.",
+                "caption": "Decisions recorded as '{0}'.".format(components.label("decision", "MODIFIED")),
             },
         ],
         columns=6,
@@ -1014,7 +1313,12 @@ def _render_agreement() -> None:
     counts = dict(agreement.get("decision_counts") or {})
     if counts:
         components.badges(
-            *[components.plain_badge("{0}: {1}".format(key, value)) for key, value in counts.items()]
+            *[
+                components.plain_badge(
+                    "{0}: {1}".format(components.label("decision", key) or str(key), value)
+                )
+                for key, value in counts.items()
+            ]
         )
     for key, text in (agreement.get("definitions") or {}).items():
         components.note("{0}: {1}".format(key, text))
@@ -1029,115 +1333,40 @@ def _render_agreement() -> None:
 # ---- page
 def render() -> None:
     components.section_header(
-        "Evaluation",
-        subtitle="The synthetic suite, the A/B/C experiments, and every metric with its sample size.",
+        "Research experiments",
+        subtitle=(
+            "Runs the A/B/C benchmark on synthetic datasets with known answers. It does "
+            "not use the audit selected in the sidebar and never touches audit data."
+        ),
         eyebrow="Research",
-    )
-    st.info(
-        "Research harness. Runs on this page create throwaway audit projects for the "
-        "synthetic datasets, and their assessments are excluded from the operational "
-        "figures on the Dashboard and in reports."
     )
 
     try:
         datasets = data_access.list_datasets()
     except data_access.DataAccessError as exc:
-        st.error("Could not read the dataset catalogue: {0}".format(exc))
+        components.error_with_remedy("Could not read the dataset catalogue.", exc)
         datasets = []
 
-    if datasets:
-        _render_datasets(datasets)
-    st.markdown("---")
-    if datasets:
-        _render_runner(datasets)
-
-    st.markdown("---")
     try:
-        runs = data_access.list_evaluation_runs()
+        runs = data_access.list_evaluation_runs(limit=_RUNS_SHOWN)
     except data_access.DataAccessError as exc:
-        st.error("Could not read past runs: {0}".format(exc))
-        return
+        components.error_with_remedy("Could not read past runs.", exc)
+        runs = []
 
-    components.section_header(
-        "Recorded runs", subtitle="{0} run(s) stored in this database.".format(len(runs))
+    tab_run, tab_compare, tab_datasets, tab_agreement = st.tabs(
+        ["Run and results", "Compare runs", "Datasets", "Human/AI agreement"]
     )
-    if not runs:
-        components.empty_state(
-            "No experiment has been run yet",
-            "Run one or more conditions above. Each run persists its scored results and "
-            "the configuration that produced them, so a figure can always be traced back.",
-        )
-        return
-
-    table = [
-        {
-            "id": row.get("id"),
-            "name": row.get("name", ""),
-            "experiment_mode": row.get("experiment_mode", ""),
-            "status": row.get("status", ""),
-            "n": (row.get("metrics") or {}).get("n_scored", row.get("result_count", 0)),
-            "accuracy": ((row.get("metrics") or {}).get("classification") or {}).get("accuracy"),
-            "llm_model": row.get("llm_model", ""),
-            "duration_seconds": float(row.get("duration_seconds", 0.0) or 0.0),
-            "started_at": row.get("started_at"),
-        }
-        for row in runs
-    ]
-    components.df_table(
-        table,
-        columns=[
-            "id",
-            "name",
-            "experiment_mode",
-            "status",
-            "n",
-            "accuracy",
-            "llm_model",
-            "duration_seconds",
-            "started_at",
-        ],
-        column_config={
-            "n": st.column_config.NumberColumn("n scored", width="small", format="%d"),
-            "accuracy": st.column_config.NumberColumn("Accuracy", width="small", format="%.2f"),
-            "duration_seconds": st.column_config.NumberColumn("Seconds", width="small", format="%.1f"),
-            "started_at": st.column_config.DatetimeColumn("Started", width="medium", format="YYYY-MM-DD HH:mm"),
-        },
-        key="eval_runs",
-    )
-
-    ids = [int(row["id"]) for row in runs if row.get("id") is not None]
-    if ids:
-        current = state.current_run_id()
-        if current not in ids:
-            current = ids[0]
-        # Keyed by the current run so a run that has just finished is the one opened: a
-        # fixed key would make Streamlit return the widget's remembered value and ignore
-        # ``index``, leaving the previous run on screen.
-        chosen = st.selectbox(
-            "Open a run",
-            options=ids,
-            index=ids.index(current),
-            format_func=lambda value: "#{0} · {1}".format(
-                value,
-                next((row.get("experiment_mode", "") for row in runs if int(row["id"]) == value), ""),
-            ),
-            key="eval_open_run_{0}".format(current),
-        )
-        if int(chosen) != int(current):
-            state.set_current_run(int(chosen))
-            st.rerun()
-        state.set_current_run(int(current))
+    with tab_run:
+        _render_runner(datasets)
         st.markdown("---")
-        _render_run_detail(int(current))
-
-    st.markdown("---")
-    components.section_header(
-        "Compare conditions", subtitle="One row per run - the A/B/C table for the write-up."
-    )
-    _render_comparison(runs)
-
-    st.markdown("---")
-    _render_agreement()
+        _render_runs(runs)
+    with tab_compare:
+        _render_comparison(runs)
+    with tab_datasets:
+        _render_datasets(datasets)
+    with tab_agreement:
+        _render_agreement()
 
 
-render()
+if __name__ == "__main__":
+    render()

@@ -20,6 +20,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #: regardless of the current working directory.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+#: Provider ids as ``app.llm.factory`` spells them. Kept here (not imported) because the
+#: factory imports this module; the two lists must stay in step with ``factory._ALIASES``.
+_MOCK_PROVIDER_IDS = frozenset({"mock", "offline", "none", "fake", "stub", "deterministic", ""})
+_CLAUDE_PROVIDER_IDS = frozenset({"claude", "anthropic"})
+
+#: Every field that holds a credential. ``redacted_dict`` masks exactly these; add a field
+#: here the moment it is added above, or it will be rendered on the Settings page.
+SECRET_FIELDS = frozenset({"llm_api_key", "embedding_api_key", "anthropic_api_key"})
+
 
 class Settings(BaseSettings):
     """Application settings. Override any field via environment variable or .env."""
@@ -34,7 +43,8 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------------ general
     app_name: str = "LLM-Assisted IT Audit Risk and Control Assessment System"
-    app_short_name: str = "LLM IT Auditor"
+    #: Display name shown to auditors. The long ``app_name`` is the research title.
+    app_short_name: str = "AuditAI"
     app_version: str = "0.1.0"
     environment: str = "development"
     debug: bool = False
@@ -66,7 +76,10 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------------- LLM
     #: "mock" (offline, deterministic) or "openai" (any OpenAI-compatible endpoint:
     #: OpenAI, Azure-compatible gateways, Ollama, vLLM, LM Studio, OpenRouter, …).
+    #: Canonical ids are "mock", "openai" and "claude" ("anthropic" is accepted as an
+    #: alias of "claude"); see ``app.llm.factory`` for the full alias table.
     llm_provider: str = "mock"
+    #: Model for the ``openai`` provider only. Claude reads ``anthropic_model``.
     llm_model: str = "gpt-4o-mini"
     llm_api_key: Optional[str] = None
     #: Point this at any OpenAI-compatible server, e.g. http://localhost:11434/v1
@@ -144,7 +157,9 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------- evaluation
     evaluation_output_dir: Path = BASE_DIR / "data" / "evaluation"
-    default_auditor_name: str = "Research Auditor"
+    #: Blank by design: the sidebar asks the auditor for a name, and a blank name is never
+    #: silently attributed to a record. Set DEFAULT_AUDITOR_NAME to pre-fill the field.
+    default_auditor_name: str = ""
 
     # ------------------------------------------------------------- validators
     @field_validator(
@@ -188,10 +203,36 @@ class Settings(BaseSettings):
         return self.database_url.startswith("sqlite")
 
     @property
+    def is_claude_provider(self) -> bool:
+        """True when ``llm_provider`` selects Claude (``claude`` or its alias ``anthropic``)."""
+        return self.llm_provider in _CLAUDE_PROVIDER_IDS
+
+    @property
+    def active_llm_model(self) -> str:
+        """The model the selected provider would actually call.
+
+        Claude reads ``anthropic_model``; every OpenAI-compatible endpoint reads
+        ``llm_model``; the mock has no model and reports itself as such.
+        """
+        if self.llm_provider in _MOCK_PROVIDER_IDS:
+            return "mock (offline rule-based)"
+        if self.is_claude_provider:
+            return self.anthropic_model
+        return self.llm_model
+
+    @property
     def llm_configured(self) -> bool:
-        """True when a real provider has everything it needs to be called."""
-        if self.llm_provider == "mock":
+        """True when the selected provider has everything it needs to be called.
+
+        Configuration only - no network call and no package import. The factory still
+        decides at run time whether the provider is *available* (e.g. the ``anthropic``
+        package is installed); this property answers "did the operator supply what the
+        provider asked for", which is what the Settings page and ``/health`` report.
+        """
+        if self.llm_provider in _MOCK_PROVIDER_IDS:
             return True
+        if self.is_claude_provider:
+            return bool(self.anthropic_api_key) or bool(self.anthropic_base_url)
         return bool(self.llm_api_key) or bool(self.llm_base_url)
 
     @property
@@ -212,7 +253,7 @@ class Settings(BaseSettings):
 
     def redacted_dict(self) -> Dict[str, Any]:
         """Settings safe to display: every secret is masked, never echoed."""
-        secret_fields = {"llm_api_key", "embedding_api_key"}
+        secret_fields = SECRET_FIELDS
         out: Dict[str, Any] = {}
         for key, value in self.model_dump().items():
             if key in secret_fields:
@@ -224,12 +265,26 @@ class Settings(BaseSettings):
         return out
 
     def provider_summary(self) -> Dict[str, Any]:
+        """Provider status safe to render. Reports the *active* provider's model and key.
+
+        ``llm_model`` and ``llm_api_key`` keep their historical keys (the API schema and
+        the Settings page read them) but describe whichever provider is selected, so a
+        Claude deployment shows ``anthropic_model`` rather than the unused OpenAI model.
+        """
+        if self.is_claude_provider:
+            api_key = self.anthropic_api_key
+            base_url = self.anthropic_base_url
+        else:
+            api_key = self.llm_api_key
+            base_url = self.llm_base_url
         return {
             "llm_provider": self.llm_provider,
-            "llm_model": self.llm_model,
-            "llm_base_url": self.llm_base_url or "(provider default)",
-            "llm_api_key": _mask(self.llm_api_key),
+            "llm_model": self.active_llm_model,
+            "llm_base_url": base_url or "(provider default)",
+            "llm_api_key": _mask(api_key),
             "llm_configured": self.llm_configured,
+            "anthropic_model": self.anthropic_model,
+            "anthropic_api_key": _mask(self.anthropic_api_key),
             "embedding_provider": self.embedding_provider,
             "embedding_model": self.embedding_model if self.embedding_provider != "local" else "hashing-vectorizer",
             "retrieval_strategy": self.retrieval_strategy,

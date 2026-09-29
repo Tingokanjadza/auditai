@@ -29,6 +29,7 @@ inferred. Add a new public function here *and* to that list.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from sqlalchemy import func, select
@@ -51,6 +52,7 @@ from app.schemas.enums import (
     ActivityAction,
     AssessmentStatus,
     DEFICIENCY_STATUSES,
+    EvidenceProvenance,
     EvidenceType,
     ExperimentMode,
     HIGH_RISK_LEVELS,
@@ -107,7 +109,15 @@ def create_project(
     control_refs: Optional[Sequence[Any]] = None,
     actor: str = "",
 ) -> AuditProject:
-    """Create an audit project, optionally scoping library controls in one step."""
+    """Create an audit project, optionally scoping library controls in one step.
+
+    Every input is validated *before* the row is added to the session: an unknown
+    control reference, a duplicate name or an inverted period raises with nothing
+    written, so a failed create never leaves a half-made project behind for the caller
+    to clean up. ``scope_note`` is stored on the project (the evaluation harness keys
+    its cleanup off it) and is also written onto each control link created here, which
+    is where the create form's "why is this in scope" note is meant to end up.
+    """
     clean_name = (name or "").strip()
     if not clean_name:
         raise InvalidInputError("Project name is required.")
@@ -115,23 +125,41 @@ def create_project(
     if not clean_area:
         raise InvalidInputError("Audit area is required.")
 
+    duplicate = session.execute(
+        select(AuditProject.id).where(func.lower(AuditProject.name) == clean_name.lower())
+    ).first()
+    if duplicate is not None:
+        raise InvalidInputError(
+            "A project named '{0}' already exists. Choose another name.".format(clean_name)
+        )
+
+    start = _coerce_datetime(period_start)
+    end = _coerce_datetime(period_end)
+    if start is not None and end is not None and _comparable(end) < _comparable(start):
+        raise InvalidInputError("The audit period end date cannot be before its start date.")
+
+    status_value = _enum_value(ProjectStatus, status, ProjectStatus.PLANNING, "status")
+    # Resolve every control before anything is written, so one bad reference cannot
+    # leave a project with a partial scope.
+    controls = [require_control(session, ref) for ref in (control_refs or [])]
+
     settings = get_settings()
     project = AuditProject(
         name=clean_name,
         audit_area=clean_area,
         description=description or "",
-        period_start=_coerce_datetime(period_start),
-        period_end=_coerce_datetime(period_end),
+        period_start=start,
+        period_end=end,
         auditor_name=(auditor_name or settings.default_auditor_name).strip(),
-        status=_enum_value(ProjectStatus, status, ProjectStatus.PLANNING, "status"),
+        status=status_value,
         scope_note=scope_note or "",
         is_demo=bool(is_demo),
     )
     session.add(project)
     session.commit()
 
-    if control_refs:
-        scope_controls(session, project.id, control_refs, actor=actor)
+    if controls:
+        scope_controls(session, project.id, controls, scope_note=scope_note or "", actor=actor)
 
     log_activity(
         session,
@@ -169,7 +197,7 @@ def list_projects(
     of operational views unless explicitly asked for.
 
     Exclusion keys off :data:`EVALUATION_SCOPE_TAG` in ``scope_note``, never off the name,
-    so a genuine engagement an auditor happened to name "[EVALUATION] Q3" still appears.
+    so a genuine audit project an auditor happened to name "[EVALUATION] Q3" still appears.
     """
     stmt = select(AuditProject)
     statuses = _value_list(ProjectStatus, status, "status")
@@ -219,6 +247,10 @@ def update_project(session: Session, project_id: int, actor: str = "", **fields:
             value = str(value).strip()
             if not value:
                 raise InvalidInputError(f"{key} cannot be empty.")
+        # Only a real change is applied and logged; re-submitting a form with the same
+        # values must not write a PROJECT_UPDATED entry that says nothing changed.
+        if _same_value(getattr(project, key), value):
+            continue
         setattr(project, key, value)
         changed[key] = value.isoformat() if isinstance(value, datetime) else value
 
@@ -236,23 +268,94 @@ def update_project(session: Session, project_id: int, actor: str = "", **fields:
     return project
 
 
-def delete_project(session: Session, project_id: int) -> bool:
-    """Delete a project and, by ORM cascade, its evidence, assessments and reports."""
+def delete_project(session: Session, project_id: int, actor: str = "") -> bool:
+    """Delete a project, its dependent rows and the files it left on disk.
+
+    The database rows go by ORM cascade (evidence, chunks, assessments, reviews,
+    reports). The stored evidence bytes and the rendered report files would otherwise
+    outlive the project as orphans in ``upload_dir`` and ``report_dir``, so they are
+    removed first through the storage layer's guarded delete, which refuses any path
+    outside the configured directories. The act is written to the activity trail as
+    PROJECT_DELETED, with ``project_id`` left empty because the project no longer
+    exists - the id is carried in ``details`` instead.
+    """
+    from app.evidence.storage import delete_stored
+
     project = get_project(session, project_id)
     if project is None:
         return False
+
+    settings = get_settings()
+    name = project.name
+    auditor_name = project.auditor_name
+    evidence_removed = 0
+    for evidence in list(project.evidence_files):
+        if delete_stored(evidence.stored_path):
+            evidence_removed += 1
+    reports_removed = 0
+    for report in list(project.reports):
+        if _delete_report_file(report.stored_path, settings.report_dir):
+            reports_removed += 1
+
     session.delete(project)
     session.commit()
+
+    log_activity(
+        session,
+        entity_type="project",
+        entity_id=int(project_id),
+        action=ActivityAction.PROJECT_DELETED,
+        actor=actor or auditor_name,
+        details={
+            "project_id": int(project_id),
+            "name": name,
+            "evidence_files_removed": evidence_removed,
+            "report_files_removed": reports_removed,
+        },
+        project_id=None,
+    )
+    return True
+
+
+def _delete_report_file(stored_path: Optional[str], report_dir: Any) -> bool:
+    """Remove a rendered report file, refusing any path outside ``report_dir``."""
+    if not stored_path:
+        return False
+    try:
+        root = Path(str(report_dir)).resolve()
+        target = Path(str(stored_path)).resolve()
+    except OSError:  # pragma: no cover - malformed path
+        return False
+    if root != target and root not in target.parents:
+        return False
+    if not target.is_file():
+        return False
+    try:
+        target.unlink()
+    except OSError:  # pragma: no cover - permissions
+        return False
     return True
 
 
 def project_to_dict(session: Session, project: AuditProject) -> Dict[str, Any]:
-    """Serialisable project view with the counts both front ends display."""
+    """Serialisable project view with the counts both front ends display.
+
+    ``controls_assessed`` is the number of distinct controls with at least one
+    assessment that did not come from the evaluation harness - the "how far along is
+    this audit" figure the project cards show next to ``controls_in_scope``.
+    """
     data = project.to_dict()
     data["period_label"] = project.period_label
     data["controls_in_scope"] = len(project.scoped_controls)
     data["evidence_files"] = len(project.evidence_files)
     data["assessments"] = len(project.assessments)
+    data["controls_assessed"] = len(
+        {
+            assessment.control_id
+            for assessment in project.assessments
+            if assessment.evaluation_run_id is None
+        }
+    )
     data["control_refs"] = [
         link.control.control_id for link in project.scoped_controls if link.control is not None
     ]
@@ -315,18 +418,26 @@ def list_controls(
 
 
 def get_control(session: Session, control_id_or_ref: Any) -> Optional[Control]:
-    """Look a control up by primary key (int, or a digit string) or by ``CONTROL-001``."""
+    """Look a control up by its reference (``CONTROL-001``), else by primary key.
+
+    The business key is always tried first. The primary key is a fallback for genuine
+    ``int`` input only: a digit *string* is treated as a reference, never as a row id,
+    because a control library is free to use numeric references and a string ``"7"``
+    arriving from a URL or a form must not silently resolve to whichever row happens to
+    be seventh.
+    """
     if isinstance(control_id_or_ref, Control):
         return control_id_or_ref
-    if isinstance(control_id_or_ref, int):
-        return session.get(Control, control_id_or_ref)
-    ref = str(control_id_or_ref or "").strip()
+    if control_id_or_ref is None:
+        return None
+    ref = str(control_id_or_ref).strip()
     if not ref:
         return None
-    if ref.isdigit():
-        return session.get(Control, int(ref))
     stmt = select(Control).where(func.upper(Control.control_id) == ref.upper())
-    return session.execute(stmt).scalars().first()
+    control = session.execute(stmt).scalars().first()
+    if control is None and isinstance(control_id_or_ref, int) and not isinstance(control_id_or_ref, bool):
+        control = session.get(Control, control_id_or_ref)
+    return control
 
 
 def require_control(session: Session, control_id_or_ref: Any) -> Control:
@@ -372,7 +483,7 @@ def create_control(session: Session, data: Dict[str, Any], actor: str = "") -> C
         session,
         entity_type="control",
         entity_id=control.id,
-        action="CONTROL_CREATED",
+        action=ActivityAction.CONTROL_CREATED,
         actor=actor,
         details={"control_id": control.control_id, "name": control.name},
     )
@@ -399,6 +510,10 @@ def update_control(session: Session, control_id_or_ref: Any, actor: str = "", **
             value = _clamp_score(value)
         elif key == "is_active":
             value = bool(value)
+        # Only fields whose value actually differs are written and listed under
+        # ``changed``; a no-op save leaves the definition and the trail untouched.
+        if _same_value(getattr(control, key), value):
+            continue
         setattr(control, key, value)
         changed.append(key)
 
@@ -408,7 +523,7 @@ def update_control(session: Session, control_id_or_ref: Any, actor: str = "", **
             session,
             entity_type="control",
             entity_id=control.id,
-            action="CONTROL_UPDATED",
+            action=ActivityAction.CONTROL_UPDATED,
             actor=actor,
             details={"control_id": control.control_id, "changed": changed},
         )
@@ -429,7 +544,7 @@ def set_control_active(session: Session, control_id_or_ref: Any, active: bool, a
         session,
         entity_type="control",
         entity_id=control.id,
-        action="CONTROL_ACTIVATED" if active else "CONTROL_DEACTIVATED",
+        action=ActivityAction.CONTROL_ACTIVATED if active else ActivityAction.CONTROL_DEACTIVATED,
         actor=actor,
         details={"control_id": control.control_id, "is_active": control.is_active},
     )
@@ -530,13 +645,22 @@ def unscope_control(session: Session, project_id: int, control_id_or_ref: Any, a
     return True
 
 
-def list_scoped_controls(session: Session, project_id: int) -> List[Control]:
+def list_scoped_controls(session: Session, project_id: int, active_only: bool = False) -> List[Control]:
+    """Controls in scope for a project, ordered by reference.
+
+    Retired controls stay in the list by default: a scope link is part of the
+    audit project's record and a past assessment of a retired control must still resolve.
+    ``active_only=True`` is for pickers - "which control do you want to run?" - where
+    offering a retired control would only produce an assessment nobody can act on.
+    """
     stmt = (
         select(Control)
         .join(ProjectControl, ProjectControl.control_id == Control.id)
         .where(ProjectControl.project_id == int(project_id))
-        .order_by(Control.control_id.asc())
     )
+    if active_only:
+        stmt = stmt.where(Control.is_active.is_(True))
+    stmt = stmt.order_by(Control.control_id.asc())
     return list(session.execute(stmt).scalars().all())
 
 
@@ -560,6 +684,7 @@ def list_evidence(
     evidence_type: Filterable = None,
     parse_status: Filterable = None,
     search: str = "",
+    provenance: Filterable = None,
 ) -> List[EvidenceFile]:
     stmt = select(EvidenceFile)
     if project_id is not None:
@@ -570,6 +695,9 @@ def list_evidence(
     statuses = _value_list(ParseStatus, parse_status, "parse_status")
     if statuses:
         stmt = stmt.where(EvidenceFile.parse_status.in_(statuses))
+    provenances = _value_list(EvidenceProvenance, provenance, "provenance")
+    if provenances:
+        stmt = stmt.where(EvidenceFile.provenance.in_(provenances))
     if search:
         stmt = stmt.where(EvidenceFile.filename.ilike(f"%{search.strip()}%"))
     stmt = stmt.order_by(EvidenceFile.uploaded_at.desc(), EvidenceFile.id.desc())
@@ -710,10 +838,16 @@ def list_assessments(
 ) -> List[Assessment]:
     """AI assessments, newest first, with the filters both front ends expose.
 
-    ``reviewed=True`` means "a human has recorded a decision other than PENDING";
-    ``reviewed=False`` is the human-review work queue. ``include_evaluation=False``
-    hides assessments produced by the evaluation harness, which belong to the research
-    experiments rather than to an auditor's project.
+    ``reviewed=True`` means "the most recent human review is a decision other than
+    PENDING"; ``reviewed=False`` means "no review yet, or the most recent one is still
+    PENDING" - the human-review work queue. Both are decided on the *latest* review row
+    per assessment through the same helpers ``pending_reviews`` and ``dashboard_stats``
+    use, so an assessment someone re-opened (a PENDING row after an ACCEPTED one) is
+    pending everywhere or nowhere, never both. The review filter is applied after
+    ``latest_per_control``, so ``reviewed=False, latest_per_control=True`` is exactly
+    the queue. ``include_evaluation=False`` hides assessments produced by the evaluation
+    harness, which belong to the research experiments rather than to an auditor's
+    project.
     """
     stmt = select(Assessment)
     if project_id is not None:
@@ -735,19 +869,20 @@ def list_assessments(
     elif not include_evaluation:
         stmt = stmt.where(Assessment.evaluation_run_id.is_(None))
 
-    if reviewed is not None:
-        reviewed_ids = select(HumanReview.assessment_id).where(
-            HumanReview.decision != HumanDecision.PENDING.value
-        )
-        stmt = stmt.where(
-            Assessment.id.in_(reviewed_ids) if reviewed else Assessment.id.notin_(reviewed_ids)
-        )
-
     stmt = stmt.order_by(Assessment.created_at.desc(), Assessment.id.desc())
     rows = list(session.execute(stmt).scalars().all())
 
     if latest_per_control:
         rows = _latest_per_control(rows)
+    if reviewed is not None:
+        completed = _completed_ids(
+            _latest_review_per_assessment(session, [assessment.id for assessment in rows])
+        )
+        rows = [
+            assessment
+            for assessment in rows
+            if (assessment.id in completed) is bool(reviewed)
+        ]
     if offset:
         rows = rows[max(0, int(offset)) :]
     if limit is not None:
@@ -802,14 +937,19 @@ def list_findings(
     high_risk_only: bool = False,
     include_evaluation: bool = False,
 ) -> List[Assessment]:
-    """Latest assessments that concluded on a deficiency - the Findings page population."""
-    rows = list_assessments(
-        session,
-        project_id=project_id,
-        status=[status.value for status in DEFICIENCY_STATUSES],
-        include_evaluation=include_evaluation,
-        latest_per_control=True,
+    """Latest assessments that concluded on a deficiency - the Findings page population.
+
+    The latest assessment per control is chosen *first*, over every assessment of the
+    project, and only then is the status filter applied. Filtering first would pick
+    "the latest deficiency" and resurrect yesterday's POTENTIAL_DEFICIENCY on a control
+    that was re-run today and found EFFECTIVE; a finding the AI has since withdrawn
+    must leave the register, exactly as it leaves the dashboard counts.
+    """
+    latest = _latest_per_control(
+        list_assessments(session, project_id=project_id, include_evaluation=include_evaluation)
     )
+    deficient = {status.value for status in DEFICIENCY_STATUSES}
+    rows = [row for row in latest if row.status in deficient]
     if high_risk_only:
         high = {level.value for level in HIGH_RISK_LEVELS}
         rows = [row for row in rows if row.risk_level in high]
@@ -877,18 +1017,31 @@ def record_human_review(
     alongside, so a stricter definition ("ACCEPTED only") can be recomputed from the same
     rows without re-reviewing anything - which is why both are kept rather than one.
 
-    Two defaults are worth stating explicitly because they shape the metric:
+    Two decisions are **not conclusions**, and the row records that whatever the caller
+    supplied for ``final_status`` and ``final_risk_level``:
 
-    * If ``final_status`` is omitted, the AI status is carried over - the reviewer left
-      the conclusion alone - so the review counts as agreement.
-    * Except for MORE_EVIDENCE_REQUESTED, where the omitted status defaults to
-      INSUFFICIENT_EVIDENCE. A reviewer asking for more evidence has not concluded, and
-      recording the AI's status as theirs would inflate agreement with a decision the
-      auditor did not make.
+    * MORE_EVIDENCE_REQUESTED always stores ``final_status`` INSUFFICIENT_EVIDENCE,
+      ``final_risk_level`` NOT_RATED and both agreement flags False. A reviewer asking
+      for more evidence has not concluded on the control; counting the AI's status as
+      theirs - or letting a stale form value through - would inflate the study's
+      agreement rate with a judgement the auditor did not make. The review still counts
+      as *completed* (the auditor did act), so it lands in the denominator of the
+      agreement rate as a disagreement, never in the numerator.
+    * PENDING records that someone opened the review: ``final_status`` is empty,
+      ``final_risk_level`` NOT_RATED, both flags False, and it never counts as a
+      completed review.
 
-    A PENDING decision records the row (someone opened the review) but never counts as
-    agreement and never counts as a completed review.
+    For ACCEPTED, MODIFIED and REJECTED an omitted ``final_status`` or
+    ``final_risk_level`` carries the AI's value over - the reviewer left it alone - so
+    such a review counts as agreement on that dimension.
+
+    ``reviewer_name`` is required. A review is the human half of the human/AI record and
+    an anonymous one cannot be attributed, so a blank name is refused here rather than
+    silently filled from configuration.
     """
+    if not (reviewer_name or "").strip():
+        raise InvalidInputError("Reviewer name is required - enter your name in the sidebar.")
+
     assessment = require_assessment(session, assessment_id)
 
     decision_member = HumanDecision.coerce(decision, None)
@@ -900,34 +1053,41 @@ def record_human_review(
     ai_status = AssessmentStatus.coerce(assessment.status, AssessmentStatus.INSUFFICIENT_EVIDENCE)
     ai_risk = RiskLevel.coerce(assessment.risk_level, RiskLevel.NOT_RATED)
     is_pending = decision_member is HumanDecision.PENDING
+    is_more_evidence = decision_member is HumanDecision.MORE_EVIDENCE_REQUESTED
+    concluded = not (is_pending or is_more_evidence)
 
+    # Supplied values are still validated even when the decision overrides them, so a
+    # typo in a filter value is reported rather than silently discarded.
+    status_member: Optional[AssessmentStatus] = None
     if final_status:
         status_member = AssessmentStatus.coerce(final_status, None)
         if status_member is None:
             raise InvalidInputError(
                 f"Unknown final_status {final_status!r}. Expected one of {AssessmentStatus.values()}."
             )
-    elif is_pending:
-        status_member = None
-    elif decision_member is HumanDecision.MORE_EVIDENCE_REQUESTED:
-        status_member = AssessmentStatus.INSUFFICIENT_EVIDENCE
-    else:
-        status_member = ai_status
-
+    risk_member: Optional[RiskLevel] = None
     if final_risk_level:
         risk_member = RiskLevel.coerce(final_risk_level, None)
         if risk_member is None:
             raise InvalidInputError(
                 f"Unknown final_risk_level {final_risk_level!r}. Expected one of {RiskLevel.values()}."
             )
-    elif is_pending:
+
+    if is_pending:
+        status_member = None
+        risk_member = RiskLevel.NOT_RATED
+    elif is_more_evidence:
+        status_member = AssessmentStatus.INSUFFICIENT_EVIDENCE
         risk_member = RiskLevel.NOT_RATED
     else:
-        risk_member = ai_risk
+        if status_member is None:
+            status_member = ai_status
+        if risk_member is None:
+            risk_member = ai_risk
 
     review = HumanReview(
         assessment_id=assessment.id,
-        reviewer_name=(reviewer_name or get_settings().default_auditor_name).strip(),
+        reviewer_name=reviewer_name.strip(),
         decision=decision_member.value,
         final_status=status_member.value if status_member is not None else "",
         final_risk_level=risk_member.value,
@@ -935,8 +1095,8 @@ def record_human_review(
         final_recommendation=final_recommendation or "",
         comments=comments or "",
         requested_evidence=_str_list(requested_evidence),
-        agreed_with_ai_status=bool(status_member is not None and status_member == ai_status),
-        agreed_with_ai_risk=bool(not is_pending and risk_member == ai_risk),
+        agreed_with_ai_status=bool(concluded and status_member == ai_status),
+        agreed_with_ai_risk=bool(concluded and risk_member == ai_risk),
         review_seconds=max(0.0, float(review_seconds or 0.0)),
         usefulness_rating=_clamp_rating(usefulness_rating),
         flagged_hallucination=bool(flagged_hallucination),
@@ -1106,20 +1266,24 @@ _DASHBOARD_DEFINITIONS: Dict[str, str] = {
         "per control, excluding assessments produced by the evaluation harness."
     ),
     "high_risk_findings": (
-        "Latest assessments whose status is POTENTIAL_DEFICIENCY or NOT_EFFECTIVE and "
-        "whose risk level is HIGH or CRITICAL."
+        "Latest assessments whose AI conclusion is 'potential deficiency' or 'not "
+        "effective' and whose risk level is high or critical."
     ),
     "pending_human_reviews": (
-        "Latest assessments with no human review decision other than PENDING."
+        "Latest assessments with no auditor decision yet (an opened but undecided "
+        "review still counts as pending)."
     ),
     "human_ai_agreement_rate": (
-        "Completed reviews whose final status equals the AI status, divided by completed "
-        "reviews. A MODIFIED or REJECTED decision that lands on the same status counts as "
-        "agreement: the metric is about the conclusion, not the editing."
+        "Completed reviews whose final conclusion equals the AI conclusion, divided by "
+        "completed reviews. A 'modify' or 'reject' decision that lands on the same "
+        "conclusion counts as agreement: the metric is about the conclusion, not the "
+        "editing. A 'request more evidence' decision is a completed review but never "
+        "agreement - the auditor has not concluded - so it counts in the denominator "
+        "only. Undecided (pending) reviews are excluded entirely."
     ),
     "citation_grounding_rate": (
-        "Citations with verdict VERIFIED divided by all citations on the counted "
-        "assessments. PARTIAL matches do not count as grounded."
+        "Quotations found verbatim in the evidence, divided by all quotations on the "
+        "counted assessments. Partly matched quotations do not count as grounded."
     ),
     "avg_latency_ms": "Mean end-to-end latency of the counted assessments that recorded a latency.",
 }
@@ -1159,9 +1323,10 @@ def log_activity(
 ) -> ActivityLog:
     """Append one row to the activity trail.
 
-    ``action`` accepts an :class:`ActivityAction` member or a plain string, because a few
-    actions (control library edits) have no enum member yet and inventing one would mean
-    editing a foundation file this module does not own.
+    ``action`` accepts an :class:`ActivityAction` member or a plain string. Every action
+    this module records has a member; the string form is kept for callers outside the
+    service (scripts, one-off imports) that want to record something the enum does not
+    yet name.
     """
     entry = ActivityLog(
         entity_type=entity_type or "",
@@ -1348,6 +1513,25 @@ def _clamp_rating(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return max(1, min(5, rating))
+
+
+def _same_value(current: Any, new: Any) -> bool:
+    """Whether an update would leave a column as it is.
+
+    Datetimes are compared on a common timezone footing because SQLite hands back naive
+    values for columns written as UTC-aware ones; without this a re-saved, unchanged
+    period would register as a change on every submit.
+    """
+    if isinstance(current, datetime) and isinstance(new, datetime):
+        return _comparable(current) == _comparable(new)
+    return current == new
+
+
+def _comparable(value: datetime) -> datetime:
+    """A timezone-aware copy so naive (SQLite) and aware datetimes can be compared."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _coerce_datetime(value: Any) -> Optional[datetime]:

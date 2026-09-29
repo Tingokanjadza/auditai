@@ -10,7 +10,7 @@ the figures.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -542,3 +542,237 @@ def test_a_real_project_named_like_an_evaluation_is_not_hidden(seeded_session):
     seeded_session.flush()
 
     assert decoy.id in [p.id for p in service.list_projects(seeded_session)]
+
+
+# ------------------------------------------------ create_project validates before writing
+def test_create_project_rejects_a_duplicate_name_case_insensitively(seeded_session):
+    service.create_project(seeded_session, name="Quarterly Access Review", audit_area="IAM")
+    with pytest.raises(InvalidInputError) as excinfo:
+        service.create_project(seeded_session, name="  quarterly access REVIEW ", audit_area="IAM")
+    assert "already exists" in str(excinfo.value)
+    assert len(service.list_projects(seeded_session, search="Quarterly")) == 1
+
+
+def test_create_project_rejects_an_inverted_period(seeded_session):
+    with pytest.raises(InvalidInputError):
+        service.create_project(
+            seeded_session,
+            name="Backwards",
+            audit_area="IAM",
+            period_start="2025-06-30",
+            period_end="2025-01-01",
+        )
+    assert service.list_projects(seeded_session, search="Backwards") == []
+
+
+def test_create_project_with_an_unknown_control_writes_nothing(seeded_session):
+    """The reference is checked before the row exists, so no half-made project is left."""
+    with pytest.raises(NotFoundError):
+        service.create_project(
+            seeded_session,
+            name="Half made",
+            audit_area="IAM",
+            control_refs=["CONTROL-001", "CONTROL-NOPE"],
+        )
+    assert service.list_projects(seeded_session, search="Half made") == []
+
+
+def test_create_project_writes_the_scope_note_onto_the_control_links(seeded_session):
+    from app.database.models import ProjectControl
+    from sqlalchemy import select
+
+    project = service.create_project(
+        seeded_session,
+        name="Noted",
+        audit_area="IAM",
+        scope_note="Key controls for the period.",
+        control_refs=["CONTROL-001", "CONTROL-002"],
+    )
+    links = seeded_session.execute(
+        select(ProjectControl).where(ProjectControl.project_id == project.id)
+    ).scalars().all()
+    assert len(links) == 2
+    assert all(link.scope_note == "Key controls for the period." for link in links)
+    assert project.scope_note == "Key controls for the period."
+
+
+# ------------------------------------------------------------ findings leave the register
+def test_a_control_re_run_as_effective_leaves_the_findings_register(
+    seeded_session, ingested_project, engine_factory, scripted_llm
+):
+    """Latest-per-control is chosen first, then filtered by status - not the other way."""
+    from app.database.models import Assessment
+
+    engine_factory().assess_control(ingested_project.id, "CONTROL-001", mode=ExperimentMode.C_RAG_WORKFLOW)
+    first = service.list_findings(seeded_session, project_id=ingested_project.id)
+    assert [row.status for row in first] == [AssessmentStatus.POTENTIAL_DEFICIENCY.value]
+
+    # A later run of the same control that concludes EFFECTIVE. Written directly so the
+    # test does not depend on scripting the multi-step workflow; the ordering is what
+    # is under test.
+    later = Assessment(
+        project_id=ingested_project.id,
+        control_id=first[0].control_id,
+        control_ref="CONTROL-001",
+        experiment_mode=ExperimentMode.C_RAG_WORKFLOW.value,
+        status=AssessmentStatus.EFFECTIVE.value,
+        risk_level=RiskLevel.LOW.value,
+        created_at=first[0].created_at + timedelta(minutes=5),
+    )
+    seeded_session.add(later)
+    seeded_session.commit()
+
+    assert service.list_findings(seeded_session, project_id=ingested_project.id) == []
+    assert service.dashboard_stats(seeded_session, project_id=ingested_project.id)["potential_deficiencies"] == 0
+
+
+# ------------------------------------------------------------------ control lookup
+def test_a_digit_string_is_a_reference_not_a_primary_key(seeded_session):
+    """``"1"`` from a URL must not resolve to whichever control is row 1."""
+    assert service.get_control(seeded_session, 1) is not None
+    assert service.get_control(seeded_session, "1") is None
+    assert service.get_control(seeded_session, True) is None
+
+
+def test_a_numeric_control_reference_wins_over_the_primary_key(seeded_session):
+    """A library is free to use numeric references; the business key is tried first."""
+    numeric = service.create_control(seeded_session, {"control_id": "1", "name": "Numeric reference"})
+    assert numeric.id != 1
+    assert service.get_control(seeded_session, "1") is numeric
+    assert service.get_control(seeded_session, 1) is numeric
+
+
+# ------------------------------------------------------------ scoped controls filter
+def test_list_scoped_controls_can_hide_retired_controls(seeded_session, project):
+    service.scope_controls(seeded_session, project.id, ["CONTROL-002"])
+    service.deactivate_control(seeded_session, "CONTROL-002")
+
+    everything = {c.control_id for c in service.list_scoped_controls(seeded_session, project.id)}
+    active = {c.control_id for c in service.list_scoped_controls(seeded_session, project.id, active_only=True)}
+    assert everything == {"CONTROL-001", "CONTROL-002"}
+    assert active == {"CONTROL-001"}
+
+
+# ---------------------------------------------------------------- deleting a project
+def test_deleting_a_project_removes_its_files_from_disk(seeded_session, ingested_project, settings):
+    from pathlib import Path
+
+    from app.database.models import AuditReport
+
+    stored = [Path(f.stored_path) for f in service.list_evidence(seeded_session, project_id=ingested_project.id)]
+    assert stored and all(path.is_file() for path in stored)
+
+    report_dir = Path(settings.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / "delete-me-report.md"
+    report_path.write_text("# synthetic report", encoding="utf-8")
+    seeded_session.add(
+        AuditReport(project_id=ingested_project.id, title="t", format="markdown", content="x", stored_path=str(report_path))
+    )
+    seeded_session.commit()
+
+    project_id = ingested_project.id
+    assert service.delete_project(seeded_session, project_id, actor="A. Auditor") is True
+    assert not any(path.exists() for path in stored)
+    assert not report_path.exists()
+    assert service.get_project(seeded_session, project_id) is None
+
+    entries = service.list_activity(seeded_session, action=ActivityAction.PROJECT_DELETED.value)
+    assert entries and entries[0].entity_id == project_id
+    assert entries[0].details["evidence_files_removed"] == len(stored)
+    assert entries[0].details["report_files_removed"] == 1
+    assert entries[0].actor == "A. Auditor"
+
+
+def test_deleting_a_project_refuses_to_touch_files_outside_the_upload_directory(
+    seeded_session, project, tmp_path
+):
+    from app.database.models import EvidenceFile
+
+    outside = tmp_path / "precious.txt"
+    outside.write_text("not evidence", encoding="utf-8")
+    seeded_session.add(
+        EvidenceFile(project_id=project.id, filename="precious.txt", stored_path=str(outside), sha256="0" * 64)
+    )
+    seeded_session.commit()
+
+    assert service.delete_project(seeded_session, project.id) is True
+    assert outside.exists()
+
+
+# ------------------------------------------------------- update logs only real changes
+def test_update_project_logs_only_fields_that_actually_changed(seeded_session, project):
+    before = len(service.list_activity(seeded_session, project_id=project.id, action="PROJECT_UPDATED"))
+    service.update_project(
+        seeded_session,
+        project.id,
+        name=project.name,  # unchanged
+        audit_area=project.audit_area,  # unchanged
+        description="Now with a description.",
+    )
+    entries = service.list_activity(seeded_session, project_id=project.id, action="PROJECT_UPDATED")
+    assert len(entries) == before + 1
+    assert entries[0].details["changed"] == {"description": "Now with a description."}
+
+    # A pure no-op save writes nothing to the trail.
+    service.update_project(seeded_session, project.id, description="Now with a description.")
+    assert len(service.list_activity(seeded_session, project_id=project.id, action="PROJECT_UPDATED")) == before + 1
+
+
+def test_update_project_period_resaved_unchanged_is_not_a_change(seeded_session, project):
+    service.update_project(seeded_session, project.id, period_start="2024-01-01")
+    count = len(service.list_activity(seeded_session, project_id=project.id, action="PROJECT_UPDATED"))
+    service.update_project(seeded_session, project.id, period_start="2024-01-01")
+    assert len(service.list_activity(seeded_session, project_id=project.id, action="PROJECT_UPDATED")) == count
+
+
+def test_update_control_logs_only_fields_that_actually_changed(seeded_session):
+    control = service.require_control(seeded_session, "CONTROL-003")
+    service.update_control(
+        seeded_session,
+        "CONTROL-003",
+        name=control.name,  # unchanged
+        category=control.category,  # unchanged
+        objective="A sharper objective.",
+    )
+    entries = service.list_activity(seeded_session, entity_type="control", action=ActivityAction.CONTROL_UPDATED.value)
+    assert entries[0].details["changed"] == ["objective"]
+    assert entries[0].action == ActivityAction.CONTROL_UPDATED.value
+
+    service.update_control(seeded_session, "CONTROL-003", objective="A sharper objective.")
+    assert len(
+        service.list_activity(seeded_session, entity_type="control", action=ActivityAction.CONTROL_UPDATED.value)
+    ) == 1
+
+
+def test_control_library_edits_use_enum_actions(seeded_session):
+    created = service.create_control(seeded_session, {"control_id": "CONTROL-910", "name": "Trail"})
+    service.deactivate_control(seeded_session, created.control_id)
+    service.set_control_active(seeded_session, created.control_id, True)
+    actions = [e.action for e in service.list_activity(seeded_session, entity_type="control")]
+    assert ActivityAction.CONTROL_CREATED.value in actions
+    assert ActivityAction.CONTROL_DEACTIVATED.value in actions
+    assert ActivityAction.CONTROL_ACTIVATED.value in actions
+
+
+# ------------------------------------------------------------- project_to_dict counts
+def test_project_to_dict_counts_controls_assessed_excluding_evaluation_runs(
+    seeded_session, ingested_project, engine_factory
+):
+    from app.database.models import EvaluationRun
+
+    engine = engine_factory()
+    engine.assess_control(ingested_project.id, "CONTROL-001", mode=ExperimentMode.B_RAG)
+    engine.assess_control(ingested_project.id, "CONTROL-001", mode=ExperimentMode.C_RAG_WORKFLOW)
+    run = EvaluationRun(name="run", experiment_mode=ExperimentMode.B_RAG.value)
+    seeded_session.add(run)
+    seeded_session.commit()
+    service.scope_controls(seeded_session, ingested_project.id, ["CONTROL-005"])
+    engine.assess_control(ingested_project.id, "CONTROL-005", mode=ExperimentMode.B_RAG, evaluation_run_id=run.id)
+
+    seeded_session.expire(ingested_project)
+    payload = service.project_to_dict(seeded_session, ingested_project)
+    assert payload["assessments"] == 3
+    assert payload["controls_assessed"] == 1
+    for key in ("controls_in_scope", "evidence_files", "control_refs", "period_label"):
+        assert key in payload

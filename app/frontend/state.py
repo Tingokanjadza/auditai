@@ -10,24 +10,48 @@ Two things are deliberately *not* stored here:
 
 * **Widget values.** Streamlit already owns those under the widget's own ``key``. Copying
   them into a second key means two sources of truth and a rerun where they disagree.
+  The one exception is the sidebar project selector, whose key is declared here as
+  :data:`K_PROJECT_WIDGET` because the shell must *write* it (see
+  :func:`request_project_switch`).
 * **Anything fetched from the database.** Session state is per browser session and
   survives reruns; caching a row here would outlive the write that invalidated it. Reads
   go through :mod:`app.frontend.data_access`, which owns its own invalidation.
 
 Everything degrades to a no-op outside a Streamlit script run (a plain ``python -c``
 import, a test), so importing this module never requires a running server.
+
+Switching the working audit project from a page
+-----------------------------------------------
+Streamlit 1.50 keys a selectbox's identity on ``key`` + ``options``. While the project
+list is unchanged, the ``index=`` argument is only honoured the first time the widget is
+drawn; afterwards the widget's own stored value wins, and the shell used to write that
+stale value straight back into :data:`K_PROJECT_ID` on every rerun. A page that set the
+current project itself was therefore overridden by the sidebar one rerun later. The fix
+is a two-step handshake:
+
+1. A page calls :func:`request_project_switch` with the target id and then
+   ``st.rerun()`` or ``st.switch_page(...)``.
+2. On the next run, *before* the shell instantiates the selectbox, it calls
+   :func:`take_pending_project_switch` and writes the id into
+   ``st.session_state[K_PROJECT_WIDGET]``. Streamlit permits writing a widget key
+   before the widget exists in that run, so the selectbox is drawn already pointing at
+   the requested project and its value then flows into :func:`set_current_project`.
+
+:func:`open_assessment` is the common case of that handshake: jump to one assessment
+that may belong to a different project.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import streamlit as st
 
 # ---- key names. One constant per key; nothing else may write these.
 K_PROJECT_ID = "ia_project_id"
 K_PROJECT = "ia_project"
+K_PENDING_PROJECT = "ia_pending_project_id"
 K_ASSESSMENT_ID = "ia_assessment_id"
 K_CONTROL_REF = "ia_control_ref"
 K_EVIDENCE_ID = "ia_evidence_id"
@@ -37,11 +61,34 @@ K_AUDITOR = "ia_auditor_name"
 K_FILTERS = "ia_filters"
 K_REVIEW_TIMERS = "ia_review_timers"
 K_FLASHES = "ia_flashes"
-K_BOOTSTRAPPED = "ia_bootstrapped"
+K_LAST_INGEST = "ia_last_ingest"
+
+#: The sidebar project selectbox's widget key. Declared here, not in the shell, because
+#: :func:`take_pending_project_switch` and the shell must agree on it exactly.
+K_PROJECT_WIDGET = "sidebar_project_select"
+
+#: Page-owned widget keys are namespaced by page with one of these prefixes. When the
+#: working project changes, :func:`set_current_project` pops every session-state key
+#: that starts with one of them, so a row selection, a filter or a form value that only
+#: made sense inside the previous project cannot resurface inside the next one.
+PROJECT_SCOPED_KEY_PREFIXES: Tuple[str, ...] = (
+    "assess_",
+    "find_",
+    "evidence_",
+    "controls_",
+    "review_",
+    "report_",
+    "projects_",
+    "home_",
+)
 
 #: Filters are namespaced by page so that "status" on Findings and "status" on
 #: Assessments do not collide, which is the failure this module exists to prevent.
 _FILTER_SEPARATOR = "::"
+
+#: Where :func:`open_assessment` lands. Page modules live under ``app/frontend/views``
+#: and ``st.switch_page`` resolves the path relative to the entry-point script.
+ASSESSMENTS_PAGE = "views/assessments.py"
 
 
 def available() -> bool:
@@ -70,8 +117,23 @@ def _set(key: str, value: Any) -> Any:
     return value
 
 
+def _pop(key: str, default: Any = None) -> Any:
+    if not available():
+        return default
+    try:
+        return st.session_state.pop(key, default)
+    except Exception:  # noqa: BLE001 - a widget instantiated earlier this run refuses deletion
+        return default
+
+
 def init_state(auditor_name: str = "") -> None:
-    """Create every key with a safe default. Idempotent; call once per script run."""
+    """Create every key that is absent, with a safe default. Idempotent.
+
+    Only keys that do not exist yet are written. In particular :data:`K_AUDITOR` is set
+    from ``auditor_name`` on the first run of a browser session and then left alone: the
+    sidebar text input owns it from that point, and re-filling it on every run would
+    undo an auditor who deliberately cleared the field.
+    """
     if not available():
         return
     defaults: Dict[str, Any] = {
@@ -86,12 +148,11 @@ def init_state(auditor_name: str = "") -> None:
         K_FILTERS: {},
         K_REVIEW_TIMERS: {},
         K_FLASHES: [],
+        K_LAST_INGEST: [],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-    if auditor_name and not st.session_state.get(K_AUDITOR):
-        st.session_state[K_AUDITOR] = auditor_name
 
 
 # ---- current project
@@ -101,13 +162,19 @@ def current_project_id() -> Optional[int]:
 
 
 def set_current_project(project: Any) -> Optional[int]:
-    """Select the working project.
+    """Select the working audit project.
 
     Accepts an id or a project dictionary; the dictionary is kept alongside so the
     sidebar can render the project's name without a query on every rerun. Selecting a
     *different* project clears the selections that only make sense inside the previous
     one - an assessment id from another project would otherwise open a detail view
-    belonging to a project the user has navigated away from.
+    belonging to a project the user has navigated away from - and pops every
+    session-state key whose name starts with one of :data:`PROJECT_SCOPED_KEY_PREFIXES`,
+    so page-level widget state (row selections, filter widgets, form drafts) starts
+    clean in the new project. Nothing is popped when the id is unchanged, which is the
+    common case on every rerun.
+
+    Safe to call outside a script run: it then returns the id and stores nothing.
     """
     if project is None:
         project_id: Optional[int] = None
@@ -120,16 +187,73 @@ def set_current_project(project: Any) -> Optional[int]:
         project_id = int(project)
         record = None
 
+    if not available():
+        return project_id
+
     if project_id != current_project_id():
         _set(K_ASSESSMENT_ID, None)
         _set(K_EVIDENCE_ID, None)
         _set(K_REPORT_ID, None)
         _set(K_CONTROL_REF, "")
         clear_filters()
+        clear_project_scoped_keys()
 
     _set(K_PROJECT_ID, project_id)
     _set(K_PROJECT, record)
     return project_id
+
+
+def clear_project_scoped_keys(prefixes: Sequence[str] = PROJECT_SCOPED_KEY_PREFIXES) -> List[str]:
+    """Pop every session-state key that starts with one of ``prefixes``.
+
+    Returns the keys removed. Called by :func:`set_current_project` when the project
+    changes; exposed so a page can reset its own namespace (pass its single prefix)
+    after, say, deleting the row a selection pointed at.
+    """
+    if not available():
+        return []
+    doomed = [
+        str(key)
+        for key in list(st.session_state.keys())
+        if any(str(key).startswith(prefix) for prefix in prefixes)
+    ]
+    removed: List[str] = []
+    for key in doomed:
+        sentinel = object()
+        if _pop(key, sentinel) is not sentinel:
+            removed.append(key)
+    return removed
+
+
+def request_project_switch(project_id: Any) -> None:
+    """Ask the shell to move the sidebar selector to ``project_id`` on the next run.
+
+    Pages must use this rather than :func:`set_current_project` when they want to
+    change the working project, because the sidebar selectbox is instantiated before
+    any page code runs and - Streamlit keying widget identity on ``key`` + ``options`` -
+    would otherwise write its previous value back over the page's choice one rerun
+    later. Call it, then ``st.rerun()`` or ``st.switch_page(...)``. The shell pops the
+    request with :func:`take_pending_project_switch` and writes it into
+    ``st.session_state[K_PROJECT_WIDGET]`` before drawing the selectbox.
+
+    ``None`` clears any pending request.
+    """
+    if project_id is None:
+        _pop(K_PENDING_PROJECT)
+        return
+    _set(K_PENDING_PROJECT, int(project_id))
+
+
+def take_pending_project_switch() -> Optional[int]:
+    """Return and clear the project id queued by :func:`request_project_switch`.
+
+    For the shell only, called once per run immediately before the project selectbox
+    is created. The shell then does ``st.session_state[K_PROJECT_WIDGET] = pending`` (a
+    widget key may be written before its widget exists in the run) so the selectbox is
+    drawn already pointing at the requested project.
+    """
+    value = _pop(K_PENDING_PROJECT)
+    return int(value) if value is not None else None
 
 
 def current_project() -> Optional[Dict[str, Any]]:
@@ -138,12 +262,12 @@ def current_project() -> Optional[Dict[str, Any]]:
     return dict(value) if isinstance(value, dict) else None
 
 
-def current_project_name(default: str = "No project selected") -> str:
+def current_project_name(default: str = "No audit project selected") -> str:
     record = current_project()
     if record and record.get("name"):
         return str(record["name"])
     project_id = current_project_id()
-    return "Project {0}".format(project_id) if project_id is not None else default
+    return "Audit project {0}".format(project_id) if project_id is not None else default
 
 
 def has_project() -> bool:
@@ -158,6 +282,26 @@ def current_assessment_id() -> Optional[int]:
 
 def set_current_assessment(assessment_id: Optional[int]) -> Optional[int]:
     return _set(K_ASSESSMENT_ID, int(assessment_id) if assessment_id is not None else None)
+
+
+def open_assessment(assessment_id: Any, project_id: Optional[int] = None) -> None:
+    """Jump to one assessment's detail view, switching audit project if it lives elsewhere.
+
+    The dashboard's review queue and the findings list can show rows from a project
+    other than the one selected in the sidebar. Opening one of those has to move the
+    sidebar too, or the Assessments page would filter the row straight back out. When
+    ``project_id`` is given and differs from the current project the switch is queued
+    with :func:`request_project_switch`; the assessment id is stored; then control
+    passes to ``views/assessments.py`` via ``st.switch_page``, which does not return.
+
+    Outside a script run this records nothing and returns quietly.
+    """
+    if not available():
+        return
+    if project_id is not None and int(project_id) != current_project_id():
+        request_project_switch(int(project_id))
+    set_current_assessment(int(assessment_id) if assessment_id is not None else None)
+    st.switch_page(ASSESSMENTS_PAGE)
 
 
 def current_control_ref() -> str:
@@ -280,7 +424,7 @@ def clear_review_timer(assessment_id: int) -> None:
     _set(K_REVIEW_TIMERS, timers)
 
 
-# ---- one-shot messages that must survive a rerun
+# ---- one-shot values that must survive a rerun
 def flash(message: str, kind: str = "success") -> None:
     """Queue a message to be shown after the rerun that follows a write.
 
@@ -316,14 +460,44 @@ def render_flashes() -> None:
             st.info(message)
 
 
+def set_last_ingest(results: Sequence[Any]) -> List[Any]:
+    """Hand the Evidence page's upload results across the rerun that follows the upload.
+
+    The upload button's script run ends in ``st.rerun()`` so the file table refreshes;
+    the per-file parse outcome (status, chunk count, any parser warning) would be lost
+    with it. It is parked here and collected once with :func:`take_last_ingest`.
+    """
+    return _set(K_LAST_INGEST, [dict(item) if isinstance(item, dict) else item for item in results])
+
+
+def take_last_ingest() -> List[Any]:
+    """Return and clear the parked upload results. Empty when nothing was uploaded."""
+    results = list(_get(K_LAST_INGEST, []) or [])
+    _set(K_LAST_INGEST, [])
+    return results
+
+
 __all__ = [
+    "ASSESSMENTS_PAGE",
     "K_ASSESSMENT_ID",
     "K_AUDITOR",
+    "K_CONTROL_REF",
+    "K_EVIDENCE_ID",
     "K_FILTERS",
+    "K_FLASHES",
+    "K_LAST_INGEST",
+    "K_PENDING_PROJECT",
+    "K_PROJECT",
     "K_PROJECT_ID",
+    "K_PROJECT_WIDGET",
+    "K_REPORT_ID",
+    "K_REVIEW_TIMERS",
+    "K_RUN_ID",
+    "PROJECT_SCOPED_KEY_PREFIXES",
     "auditor_name",
     "available",
     "clear_filters",
+    "clear_project_scoped_keys",
     "clear_review_timer",
     "current_assessment_id",
     "current_control_ref",
@@ -338,8 +512,10 @@ __all__ = [
     "get_filters",
     "has_project",
     "init_state",
+    "open_assessment",
     "pop_flashes",
     "render_flashes",
+    "request_project_switch",
     "review_elapsed_seconds",
     "set_auditor_name",
     "set_current_assessment",
@@ -349,5 +525,8 @@ __all__ = [
     "set_current_report",
     "set_current_run",
     "set_filter",
+    "set_last_ingest",
     "start_review_timer",
+    "take_last_ingest",
+    "take_pending_project_switch",
 ]
