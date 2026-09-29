@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "audit-ui",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-c", "import os, sys, runpy; sys.argv = ['streamlit', 'run', 'app/frontend/streamlit_app.py', '--server.port', os.environ.get('PORT', '8501'), '--server.address', '127.0.0.1', '--server.headless', 'true', '--browser.gatherUsageStats', 'false']; runpy.run_module('streamlit', run_name='__main__')"],
+      "port": 8501,
+      "autoPort": true
+    }
+  ]
+}
